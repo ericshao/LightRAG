@@ -502,3 +502,38 @@ A query prefix in the query string can determines which LightRAG query mode is u
 For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
 
 "/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
+
+## Dify External Knowledge API Adapter
+
+LightRAG supports integrating with Dify as an external knowledge base through the Dify External Knowledge API protocol.
+
+### Configuration
+
+Add the following settings to your .env file:
+
+```ini
+# Enable Dify adapter
+ENABLE_DIFY_ADAPTER=True
+
+# Comma-separated list of allowed API keys
+DIFY_API_KEYS=your_key1,your_key2
+```
+
+### Endpoints
+
+#### POST /dify/retrieval
+
+Example:
+```bash
+curl -X POST "http://localhost:9621/dify/retrieval" \
+-H "Authorization: Bearer your_key" \
+-H "Content-Type: application/json" \
+-d '{
+  "knowledge_id": "your_kb_id",
+  "query": "your query text",
+  "retrieval_setting": {
+    "top_k": 5,
+    "score_threshold": 0.5
+  }
+}'
+```

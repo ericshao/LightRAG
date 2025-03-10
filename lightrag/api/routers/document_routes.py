@@ -9,6 +9,7 @@ import aiofiles
 import shutil
 import traceback
 import pipmaster as pm
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -44,6 +45,14 @@ class InsertTextRequest(BaseModel):
         min_length=1,
         description="The text to insert",
     )
+    split_by_character: str | None = Field(
+        None,
+        max_length=8,
+        description=(
+            "Optional single character to use for text splitting. If provided, text will be "
+            "split on this character while still respecting token size limits."
+        ),
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -55,6 +64,14 @@ class InsertTextsRequest(BaseModel):
     texts: list[str] = Field(
         min_length=1,
         description="The texts to insert",
+    )
+    split_by_character: str | None = Field(
+        None,
+        max_length=1,
+        description=(
+            "Optional single character to use for text splitting. If provided, texts will be "
+            "split on this character while still respecting token size limits."
+        ),
     )
 
     @field_validator("texts", mode="after")
@@ -214,7 +231,6 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 | ".rtf"
                 | ".odt"
                 | ".epub"
-                | ".csv"
                 | ".log"
                 | ".conf"
                 | ".ini"
@@ -237,6 +253,41 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 | ".less"
             ):
                 content = file.decode("utf-8")
+            case ".csv":
+                try:
+                    text = file.decode("utf-8")
+                    reader = csv.reader(text.splitlines())
+                    # 获取并验证标题行
+                    headers = next(reader, None)
+                    if not headers:
+                        logging.error(f"Empty CSV file or missing headers: {file_path}")
+                        return False
+                    # 处理数据行
+                    processed_lines = []
+                    row_count = 0
+                    for row in reader:
+                        if len(row) != len(headers):
+                            logging.warning(f"Skipping malformed row in {file_path}, expected {len(headers)} columns, got {len(row)}")
+                            continue
+                        # 格式化行数据
+                        formatted_row = []
+                        for header, value in zip(headers, row):
+                            if value.strip():  # 只包含非空值
+                                formatted_row.append(f"{header.strip()}: {value.strip()}")
+                        if formatted_row:  # 只添加非空行
+                            processed_lines.append(" | ".join(formatted_row))
+                        row_count += 1
+                    if not processed_lines:
+                        logging.warning(f"No valid data found in CSV file: {file_path}")
+                        return False
+                    content = "\n\n".join(processed_lines)
+                    logging.info(f"Successfully processed CSV file: {file_path} ({row_count} rows)")
+                except UnicodeDecodeError:
+                    logging.error(f"CSV file encoding error: {file_path}")
+                    return False
+                except Exception as e:
+                    logging.error(f"Failed to process CSV file {file_path}: {str(e)}")
+                    return False
             case ".pdf":
                 if not pm.is_installed("pypdf2"):
                     pm.install("pypdf2")
@@ -353,17 +404,22 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         logging.error(traceback.format_exc())
 
 
-async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
+async def pipeline_index_texts(
+    rag: LightRAG, 
+    texts: List[str],
+    split_by_character: str | None = None
+):
     """Index a list of texts
 
     Args:
         rag: LightRAG instance
         texts: The texts to index
+        split_by_character: Optional character to split texts on while respecting token limits
     """
     if not texts:
         return
     await rag.apipeline_enqueue_documents(texts)
-    await rag.apipeline_process_enqueue_documents()
+    await rag.apipeline_process_enqueue_documents(split_by_character=split_by_character)
 
 
 async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
@@ -531,7 +587,11 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, [request.text])
+            background_tasks.add_task(
+                pipeline_index_texts,
+                rag, [request.text],
+                split_by_character=request.split_by_character
+            )
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -566,7 +626,11 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, request.texts)
+            background_tasks.add_task(
+                pipeline_index_texts, 
+                rag, request.texts,
+                split_by_character=request.split_by_character
+            )
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -767,4 +831,35 @@ def create_document_routes(
             logging.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.get("/{doc_id}", dependencies=[Depends(optional_api_key)])
+    async def get_document_content(
+        doc_id: str,
+    ) -> dict:
+        """获取指定文档的内容
+        
+        Args:
+            doc_id: 要获取的文档ID 
+            rag: LightRAG实例
+        
+        Returns:
+            dict: 包含文档内容和元数据的字典
+        
+        Raises:
+            HTTPException: 如果文档未找到返回404
+        """
+        try:
+            doc = await rag.full_docs.get_by_id(doc_id)
+            if not doc:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Document not found"
+                )
+            return {
+                "content": doc["content"],
+                "metadata": doc.get("metadata", {})
+            }
+        except Exception as e:
+            logging.error(f"Error GET /documents/{doc_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
     return router

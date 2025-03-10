@@ -1169,9 +1169,10 @@ async def _get_node_data(
         )
     relations_context = list_of_list_to_csv(relations_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
+        doc_id = t.get("full_doc_id", "Unknown")
+        text_units_section_list.append([i, t["content"], doc_id])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1409,9 +1410,10 @@ async def _get_edge_data(
         )
     entities_context = list_of_list_to_csv(entites_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
+        doc_id = t.get("full_doc_id", "Unknown")
+        text_units_section_list.append([i, t["content"], doc_id])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 

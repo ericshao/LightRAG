@@ -165,8 +165,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-async",
         type=int,
-        default=get_env_value("MAX_ASYNC", 4, int),
-        help="Maximum async operations (default: from env or 4)",
+        default=get_env_value("MAX_ASYNC", 24, int),
+        help="Maximum async operations (default: from env or 24)",
     )
     parser.add_argument(
         "--max-tokens",

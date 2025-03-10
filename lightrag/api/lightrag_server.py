@@ -38,6 +38,8 @@ from .routers.document_routes import (
 from .routers.query_routes import create_query_routes
 from .routers.graph_routes import create_graph_routes
 from .routers.ollama_api import OllamaAPI
+from .routers.dify_routes import create_dify_routes
+from .routers.kg_routes import create_kg_routes
 
 # Load environment variables
 try:
@@ -390,6 +392,12 @@ def create_app(args):
     app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_kg_routes(rag, api_key))
+    
+    # Add Dify External Knowledge API routes if enabled
+    if os.getenv("ENABLE_DIFY_ADAPTER", "False").lower() == "true":
+        ASCIIColors.info("Enabling Dify External Knowledge API adapter")
+        app.include_router(create_dify_routes(rag, api_key))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
