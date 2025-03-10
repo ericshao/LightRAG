@@ -1989,6 +1989,8 @@ class LightRAG:
         """
         from .kg_manage import update_relation
         return await update_relation(self, src_entity, tgt_entity, relation_data)
+
+
     async def aclear_cache(self, modes: list[str] | None = None) -> None:
         """Clear cache data from the LLM response cache storage.
 
