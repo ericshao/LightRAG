@@ -6,6 +6,7 @@ import io
 import csv
 import json
 import logging
+import logging.handlers
 import os
 import re
 from dataclasses import dataclass
@@ -56,6 +57,113 @@ def set_verbose_debug(enabled: bool):
     VERBOSE_DEBUG = enabled
 
 
+statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
+
+# Initialize logger
+logger = logging.getLogger("lightrag")
+logger.propagate = False  # prevent log message send to root loggger
+# Let the main application configure the handlers
+logger.setLevel(logging.INFO)
+
+# Set httpx logging level to WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+class LightragPathFilter(logging.Filter):
+    """Filter for lightrag logger to filter out frequent path access logs"""
+
+    def __init__(self):
+        super().__init__()
+        # Define paths to be filtered
+        self.filtered_paths = ["/documents", "/health", "/webui/"]
+
+    def filter(self, record):
+        try:
+            # Check if record has the required attributes for an access log
+            if not hasattr(record, "args") or not isinstance(record.args, tuple):
+                return True
+            if len(record.args) < 5:
+                return True
+
+            # Extract method, path and status from the record args
+            method = record.args[1]
+            path = record.args[2]
+            status = record.args[4]
+
+            # Filter out successful GET requests to filtered paths
+            if (
+                method == "GET"
+                and (status == 200 or status == 304)
+                and path in self.filtered_paths
+            ):
+                return False
+
+            return True
+        except Exception:
+            # In case of any error, let the message through
+            return True
+
+
+def setup_logger(
+    logger_name: str,
+    level: str = "INFO",
+    add_filter: bool = False,
+    log_file_path: str = None,
+):
+    """Set up a logger with console and file handlers
+
+    Args:
+        logger_name: Name of the logger to set up
+        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        add_filter: Whether to add LightragPathFilter to the logger
+        log_file_path: Path to the log file. If None, will use current directory/lightrag.log
+    """
+    # Configure formatters
+    detailed_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    simple_formatter = logging.Formatter("%(levelname)s: %(message)s")
+
+    # Get log file path
+    if log_file_path is None:
+        log_dir = os.getenv("LOG_DIR", os.getcwd())
+        log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+
+    # Ensure log directory exists
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+
+    # Get log file max size and backup count from environment variables
+    log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
+    log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
+
+    logger_instance = logging.getLogger(logger_name)
+    logger_instance.setLevel(level)
+    logger_instance.handlers = []  # Clear existing handlers
+    logger_instance.propagate = False
+
+    # Add console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(simple_formatter)
+    console_handler.setLevel(level)
+    logger_instance.addHandler(console_handler)
+
+    # Add file handler
+    file_handler = logging.handlers.RotatingFileHandler(
+        filename=log_file_path,
+        maxBytes=log_max_bytes,
+        backupCount=log_backup_count,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(detailed_formatter)
+    file_handler.setLevel(level)
+    logger_instance.addHandler(file_handler)
+
+    # Add path filter if requested
+    if add_filter:
+        path_filter = LightragPathFilter()
+        logger_instance.addFilter(path_filter)
+
+
 class UnlimitedSemaphore:
     """A context manager that allows unlimited access."""
 
@@ -67,34 +175,6 @@ class UnlimitedSemaphore:
 
 
 ENCODER = None
-
-statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
-
-logger = logging.getLogger("lightrag")
-
-# Set httpx logging level to WARNING
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
-def set_logger(log_file: str, level: int = logging.DEBUG):
-    """Set up file logging with the specified level.
-
-    Args:
-        log_file: Path to the log file
-        level: Logging level (e.g. logging.DEBUG, logging.INFO)
-    """
-    logger.setLevel(level)
-
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(level)
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    file_handler.setFormatter(formatter)
-
-    if not logger.handlers:
-        logger.addHandler(file_handler)
 
 
 @dataclass

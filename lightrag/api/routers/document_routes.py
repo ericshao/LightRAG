@@ -3,8 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-import logging
-import os
+from lightrag.utils import logger
 import aiofiles
 import shutil
 import traceback
@@ -13,28 +12,18 @@ import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from ..utils_api import get_api_key_dependency
+from ..utils_api import get_api_key_dependency, get_auth_dependency
 
-
-router = APIRouter(prefix="/documents", tags=["documents"])
-
-# Global progress tracker
-scan_progress: Dict = {
-    "is_scanning": False,
-    "current_file": "",
-    "indexed_count": 0,
-    "total_files": 0,
-    "progress": 0,
-}
-
-# Lock for thread-safe operations
-progress_lock = asyncio.Lock()
+router = APIRouter(
+    prefix="/documents",
+    tags=["documents"],
+    dependencies=[Depends(get_auth_dependency())],
+)
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
@@ -178,18 +167,11 @@ class DocumentManager:
         """Scan input directory for new files"""
         new_files = []
         for ext in self.supported_extensions:
-            logging.debug(f"Scanning for {ext} files in {self.input_dir}")
+            logger.debug(f"Scanning for {ext} files in {self.input_dir}")
             for file_path in self.input_dir.rglob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
         return new_files
-
-    # def scan_directory(self) -> List[Path]:
-    #     new_files = []
-    #     for ext in self.supported_extensions:
-    #         for file_path in self.input_dir.rglob(f"*{ext}"):
-    #             new_files.append(file_path)
-    #     return new_files
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
@@ -252,7 +234,26 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 | ".scss"
                 | ".less"
             ):
-                content = file.decode("utf-8")
+                try:
+                    # Try to decode as UTF-8
+                    content = file.decode("utf-8")
+
+                    # Validate content
+                    if not content or len(content.strip()) == 0:
+                        logger.error(f"Empty content in file: {file_path.name}")
+                        return False
+
+                    # Check if content looks like binary data string representation
+                    if content.startswith("b'") or content.startswith('b"'):
+                        logger.error(
+                            f"File {file_path.name} appears to contain binary data representation instead of text"
+                        )
+                        return False
+
+                except UnicodeDecodeError:
+                    logger.error(
+                        f"File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
+                    )
             case ".csv":
                 try:
                     text = file.decode("utf-8")
@@ -260,14 +261,12 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     # 获取并验证标题行
                     headers = next(reader, None)
                     if not headers:
-                        logging.error(f"Empty CSV file or missing headers: {file_path}")
                         return False
                     # 处理数据行
                     processed_lines = []
                     row_count = 0
                     for row in reader:
                         if len(row) != len(headers):
-                            logging.warning(f"Skipping malformed row in {file_path}, expected {len(headers)} columns, got {len(row)}")
                             continue
                         # 格式化行数据
                         formatted_row = []
@@ -278,18 +277,14 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                             processed_lines.append(" | ".join(formatted_row))
                         row_count += 1
                     if not processed_lines:
-                        logging.warning(f"No valid data found in CSV file: {file_path}")
                         return False
                     content = "\n\n".join(processed_lines)
-                    logging.info(f"Successfully processed CSV file: {file_path} ({row_count} rows)")
                 except UnicodeDecodeError:
-                    logging.error(f"CSV file encoding error: {file_path}")
                     return False
                 except Exception as e:
-                    logging.error(f"Failed to process CSV file {file_path}: {str(e)}")
                     return False
             case ".pdf":
-                if not pm.is_installed("pypdf2"):
+                if not pm.is_installed("pypdf2"):  # type: ignore
                     pm.install("pypdf2")
                 from PyPDF2 import PdfReader  # type: ignore
                 from io import BytesIO
@@ -299,18 +294,18 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 for page in reader.pages:
                     content += page.extract_text() + "\n"
             case ".docx":
-                if not pm.is_installed("docx"):
+                if not pm.is_installed("python-docx"):  # type: ignore
                     pm.install("docx")
-                from docx import Document
+                from docx import Document  # type: ignore
                 from io import BytesIO
 
                 docx_file = BytesIO(file)
                 doc = Document(docx_file)
                 content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
             case ".pptx":
-                if not pm.is_installed("pptx"):
+                if not pm.is_installed("python-pptx"):  # type: ignore
                     pm.install("pptx")
-                from pptx import Presentation
+                from pptx import Presentation  # type: ignore
                 from io import BytesIO
 
                 pptx_file = BytesIO(file)
@@ -320,9 +315,9 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         if hasattr(shape, "text"):
                             content += shape.text + "\n"
             case ".xlsx":
-                if not pm.is_installed("openpyxl"):
+                if not pm.is_installed("openpyxl"):  # type: ignore
                     pm.install("openpyxl")
-                from openpyxl import load_workbook
+                from openpyxl import load_workbook  # type: ignore
                 from io import BytesIO
 
                 xlsx_file = BytesIO(file)
@@ -338,7 +333,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         )
                     content += "\n"
             case _:
-                logging.error(
+                logger.error(
                     f"Unsupported file type: {file_path.name} (extension {ext})"
                 )
                 return False
@@ -346,20 +341,20 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
         # Insert into the RAG queue
         if content:
             await rag.apipeline_enqueue_documents(content)
-            logging.info(f"Successfully fetched and enqueued file: {file_path.name}")
+            logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
         else:
-            logging.error(f"No content could be extracted from file: {file_path.name}")
+            logger.error(f"No content could be extracted from file: {file_path.name}")
 
     except Exception as e:
-        logging.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
-        logging.error(traceback.format_exc())
+        logger.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
+        logger.error(traceback.format_exc())
     finally:
         if file_path.name.startswith(temp_prefix):
             try:
                 file_path.unlink()
             except Exception as e:
-                logging.error(f"Error deleting file {file_path}: {str(e)}")
+                logger.error(f"Error deleting file {file_path}: {str(e)}")
     return False
 
 
@@ -375,8 +370,8 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path):
             await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
-        logging.error(f"Error indexing file {file_path.name}: {str(e)}")
-        logging.error(traceback.format_exc())
+        logger.error(f"Error indexing file {file_path.name}: {str(e)}")
+        logger.error(traceback.format_exc())
 
 
 async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
@@ -400,8 +395,8 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         if enqueued:
             await rag.apipeline_process_enqueue_documents()
     except Exception as e:
-        logging.error(f"Error indexing files: {str(e)}")
-        logging.error(traceback.format_exc())
+        logger.error(f"Error indexing files: {str(e)}")
+        logger.error(traceback.format_exc())
 
 
 async def pipeline_index_texts(
@@ -449,30 +444,17 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     """Background task to scan and index documents"""
     try:
         new_files = doc_manager.scan_directory_for_new_files()
-        scan_progress["total_files"] = len(new_files)
+        total_files = len(new_files)
+        logger.info(f"Found {total_files} new files to index.")
 
-        logging.info(f"Found {len(new_files)} new files to index.")
-        for file_path in new_files:
+        for idx, file_path in enumerate(new_files):
             try:
-                async with progress_lock:
-                    scan_progress["current_file"] = os.path.basename(file_path)
-
                 await pipeline_index_file(rag, file_path)
-
-                async with progress_lock:
-                    scan_progress["indexed_count"] += 1
-                    scan_progress["progress"] = (
-                        scan_progress["indexed_count"] / scan_progress["total_files"]
-                    ) * 100
-
             except Exception as e:
-                logging.error(f"Error indexing file {file_path}: {str(e)}")
+                logger.error(f"Error indexing file {file_path}: {str(e)}")
 
     except Exception as e:
-        logging.error(f"Error during scanning process: {str(e)}")
-    finally:
-        async with progress_lock:
-            scan_progress["is_scanning"] = False
+        logger.error(f"Error during scanning process: {str(e)}")
 
 
 def create_document_routes(
@@ -492,33 +474,9 @@ def create_document_routes(
         Returns:
             dict: A dictionary containing the scanning status
         """
-        async with progress_lock:
-            if scan_progress["is_scanning"]:
-                return {"status": "already_scanning"}
-
-            scan_progress["is_scanning"] = True
-            scan_progress["indexed_count"] = 0
-            scan_progress["progress"] = 0
-
         # Start the scanning process in the background
         background_tasks.add_task(run_scanning_process, rag, doc_manager)
         return {"status": "scanning_started"}
-
-    @router.get("/scan-progress")
-    async def get_scan_progress():
-        """
-        Get the current progress of the document scanning process.
-
-        Returns:
-            dict: A dictionary containing the current scanning progress information including:
-                - is_scanning: Whether a scan is currently in progress
-                - current_file: The file currently being processed
-                - indexed_count: Number of files indexed so far
-                - total_files: Total number of files to process
-                - progress: Percentage of completion
-        """
-        async with progress_lock:
-            return scan_progress
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
@@ -560,8 +518,8 @@ def create_document_routes(
                 message=f"File '{file.filename}' uploaded successfully. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/upload: {file.filename}: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -597,8 +555,8 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/text: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/text: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -636,8 +594,8 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/text: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/text: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -679,8 +637,8 @@ def create_document_routes(
                 message=f"File '{file.filename}' saved successfully. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/file: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/file: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -742,8 +700,8 @@ def create_document_routes(
 
             return InsertResponse(status=status, message=status_message)
         except Exception as e:
-            logging.error(f"Error /documents/batch: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/batch: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
@@ -770,8 +728,42 @@ def create_document_routes(
                 status="success", message="All documents cleared successfully"
             )
         except Exception as e:
-            logging.error(f"Error DELETE /documents: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error DELETE /documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/pipeline_status", dependencies=[Depends(optional_api_key)])
+    async def get_pipeline_status():
+        """
+        Get the current status of the document indexing pipeline.
+
+        This endpoint returns information about the current state of the document processing pipeline,
+        including whether it's busy, the current job name, when it started, how many documents
+        are being processed, how many batches there are, and which batch is currently being processed.
+
+        Returns:
+            dict: A dictionary containing the pipeline status information
+        """
+        try:
+            from lightrag.kg.shared_storage import get_namespace_data
+
+            pipeline_status = await get_namespace_data("pipeline_status")
+
+            # Convert to regular dict if it's a Manager.dict
+            status_dict = dict(pipeline_status)
+
+            # Convert history_messages to a regular list if it's a Manager.list
+            if "history_messages" in status_dict:
+                status_dict["history_messages"] = list(status_dict["history_messages"])
+
+            # Format the job_start time if it exists
+            if status_dict.get("job_start"):
+                status_dict["job_start"] = str(status_dict["job_start"])
+
+            return status_dict
+        except Exception as e:
+            logger.error(f"Error getting pipeline status: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("", dependencies=[Depends(optional_api_key)])
@@ -827,8 +819,8 @@ def create_document_routes(
                     )
             return response
         except Exception as e:
-            logging.error(f"Error GET /documents: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error GET /documents: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/{doc_id}", dependencies=[Depends(optional_api_key)])
