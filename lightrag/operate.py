@@ -138,6 +138,7 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
+    # logger.info(f"record_attributes: {record_attributes} chunk_key: {chunk_key}")
     if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
         return None
     # add this record as a node in the G
@@ -147,6 +148,8 @@ async def _handle_single_entity_extraction(
     entity_type = clean_str(record_attributes[2]).strip('"')
     entity_description = clean_str(record_attributes[3]).strip('"')
     entity_source_id = chunk_key
+
+    # logger.info(f"entity_name: {entity_name} entity_type: {entity_type} entity_description: {entity_description} entity_source_id: {entity_source_id}")
     return dict(
         entity_name=entity_name,
         entity_type=entity_type,
@@ -457,6 +460,7 @@ async def extract_entities(
             glean_result = await _user_llm_func_with_cache(
                 continue_prompt, history_messages=history
             )
+            logger.info(f"LLM glean {now_glean_index} result: {glean_result}")
 
             history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
             final_result += glean_result
@@ -467,8 +471,12 @@ async def extract_entities(
                 if_loop_prompt, history_messages=history
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
+            logger.info(f"LLM if_loop result: {if_loop_result}")
+            # if_loop_result = 'NO'
             if if_loop_result != "yes":
                 break
+
+        logger.info(f"LLM final result: {final_result}")
 
         records = split_string_by_multi_markers(
             final_result,

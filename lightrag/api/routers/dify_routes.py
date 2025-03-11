@@ -155,7 +155,7 @@ def format_kg_to_json(kg_context: str) -> str:
                     source_dict[headers[i]] = value
             result["sources"].append(source_dict)
     
-    logging.info(f"kg_context JSON: {result}")
+    logger.info(f"kg_JSON: {result}")
     # 转换为JSON字符串
     return json.dumps(result, ensure_ascii=False, indent=2)
 
