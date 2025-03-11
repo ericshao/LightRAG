@@ -64,3 +64,5 @@ gui/
 
 # unit-test files
 test_*
+rag_storage*/
+visual/knowledge_graph.html

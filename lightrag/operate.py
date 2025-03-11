@@ -139,6 +139,7 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
+    # logger.info(f"record_attributes: {record_attributes} chunk_key: {chunk_key}")
     if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
         return None
 
@@ -527,6 +528,7 @@ async def extract_entities(
             glean_result = await _user_llm_func_with_cache(
                 continue_prompt, history_messages=history
             )
+            logger.info(f"LLM glean {now_glean_index} result: {glean_result}")
 
             history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
 
@@ -548,6 +550,8 @@ async def extract_entities(
                 if_loop_prompt, history_messages=history
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
+            logger.info(f"LLM if_loop result: {if_loop_result}")
+            # if_loop_result = 'NO'
             if if_loop_result != "yes":
                 break
 
@@ -1281,9 +1285,10 @@ async def _get_node_data(
         )
     relations_context = list_of_list_to_csv(relations_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
+        doc_id = t.get("full_doc_id", "Unknown")
+        text_units_section_list.append([i, t["content"], doc_id])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1531,9 +1536,10 @@ async def _get_edge_data(
         )
     entities_context = list_of_list_to_csv(entites_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
+        doc_id = t.get("full_doc_id", "Unknown")
+        text_units_section_list.append([i, t["content"], doc_id])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
