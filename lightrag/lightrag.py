@@ -30,11 +30,10 @@ from .namespace import NameSpace, make_namespace
 from .operate import (
     chunking_by_token_size,
     extract_entities,
-    extract_keywords_only,
     kg_query,
-    kg_query_with_keywords,
     mix_kg_vector_query,
     naive_query,
+    query_with_keywords,
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 from .utils import (
@@ -45,6 +44,9 @@ from .utils import (
     encode_string_by_tiktoken,
     lazy_external_import,
     limit_async_func_call,
+    get_content_summary,
+    clean_text,
+    check_storage_env_vars,
     logger,
 )
 from .types import KnowledgeGraph
@@ -309,7 +311,7 @@ class LightRAG:
             # Verify storage implementation compatibility
             verify_storage_implementation(storage_type, storage_name)
             # Check environment variables
-            # self.check_storage_env_vars(storage_name)
+            check_storage_env_vars(storage_name)
 
         # Ensure vector_db_storage_cls_kwargs has required fields
         self.vector_db_storage_cls_kwargs = {
@@ -354,6 +356,9 @@ class LightRAG:
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
             ),
+            global_config=asdict(
+                self
+            ),  # Add global_config to ensure cache works properly
             embedding_func=self.embedding_func,
         )
 
@@ -404,18 +409,8 @@ class LightRAG:
             embedding_func=None,
         )
 
-        if self.llm_response_cache and hasattr(
-            self.llm_response_cache, "global_config"
-        ):
-            hashing_kv = self.llm_response_cache
-        else:
-            hashing_kv = self.key_string_value_json_storage_cls(  # type: ignore
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                ),
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-            )
+        # Directly use llm_response_cache, don't create a new object
+        hashing_kv = self.llm_response_cache
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
@@ -543,11 +538,6 @@ class LightRAG:
         storage_class = lazy_external_import(import_path, storage_name)
         return storage_class
 
-    @staticmethod
-    def clean_text(text: str) -> str:
-        """Clean text by removing null bytes (0x00) and whitespace"""
-        return text.strip().replace("\x00", "")
-
     def insert(
         self,
         input: str | list[str],
@@ -590,6 +580,7 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
+    # TODO: deprecated, use insert instead
     def insert_custom_chunks(
         self,
         full_text: str,
@@ -601,14 +592,15 @@ class LightRAG:
             self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
         )
 
+    # TODO: deprecated, use ainsert instead
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
         update_storage = False
         try:
             # Clean input texts
-            full_text = self.clean_text(full_text)
-            text_chunks = [self.clean_text(chunk) for chunk in text_chunks]
+            full_text = clean_text(full_text)
+            text_chunks = [clean_text(chunk) for chunk in text_chunks]
 
             # Process cleaned texts
             if doc_id is None:
@@ -714,7 +706,7 @@ class LightRAG:
         new_docs: dict[str, Any] = {
             id_: {
                 "content": content,
-                "content_summary": self._get_content_summary(content),
+                "content_summary": get_content_summary(content),
                 "content_length": len(content),
                 "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
@@ -903,7 +895,9 @@ class LightRAG:
                                 self.chunks_vdb.upsert(chunks)
                             )
                             entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(chunks)
+                                self._process_entity_relation_graph(
+                                    chunks, pipeline_status, pipeline_status_lock
+                                )
                             )
                             full_docs_task = asyncio.create_task(
                                 self.full_docs.upsert(
@@ -1018,21 +1012,27 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
+    async def _process_entity_relation_graph(
+        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         try:
             await extract_entities(
                 chunk,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
                 relationships_vdb=self.relationships_vdb,
-                llm_response_cache=self.llm_response_cache,
                 global_config=asdict(self),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                llm_response_cache=self.llm_response_cache,
             )
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
             raise e
 
-    async def _insert_done(self) -> None:
+    async def _insert_done(
+        self, pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         tasks = [
             cast(StorageNameSpace, storage_inst).index_done_callback()
             for storage_inst in [  # type: ignore
@@ -1051,12 +1051,10 @@ class LightRAG:
         log_message = "All Insert done"
         logger.info(log_message)
 
-        # 获取 pipeline_status 并更新 latest_message 和 history_messages
-        from lightrag.kg.shared_storage import get_namespace_data
-
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
@@ -1073,7 +1071,7 @@ class LightRAG:
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
             for chunk_data in custom_kg.get("chunks", []):
-                chunk_content = self.clean_text(chunk_data["content"])
+                chunk_content = clean_text(chunk_data["content"])
                 source_id = chunk_data["source_id"]
                 tokens = len(
                     encode_string_by_tiktoken(
@@ -1271,16 +1269,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "naive":
@@ -1290,16 +1279,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "mix":
@@ -1312,16 +1292,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         else:
@@ -1333,8 +1304,17 @@ class LightRAG:
         self, query: str, prompt: str, param: QueryParam = QueryParam()
     ):
         """
-        1. Extract keywords from the 'query' using new function in operate.py.
-        2. Then run the standard aquery() flow with the final prompt (formatted_question).
+        Query with separate keyword extraction step.
+
+        This method extracts keywords from the query first, then uses them for the query.
+
+        Args:
+            query: User query
+            prompt: Additional prompt for the query
+            param: Query parameters
+
+        Returns:
+            Query response
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
@@ -1345,99 +1325,28 @@ class LightRAG:
         self, query: str, prompt: str, param: QueryParam = QueryParam()
     ) -> str | AsyncIterator[str]:
         """
-        1. Calls extract_keywords_only to get HL/LL keywords from 'query'.
-        2. Then calls kg_query(...) or naive_query(...), etc. as the main query, while also injecting the newly extracted keywords if needed.
+        Async version of query_with_separate_keyword_extraction.
+
+        Args:
+            query: User query
+            prompt: Additional prompt for the query
+            param: Query parameters
+
+        Returns:
+            Query response or async iterator
         """
-        # ---------------------
-        # STEP 1: Keyword Extraction
-        # ---------------------
-        hl_keywords, ll_keywords = await extract_keywords_only(
-            text=query,
+        response = await query_with_keywords(
+            query=query,
+            prompt=prompt,
             param=param,
+            knowledge_graph_inst=self.chunk_entity_relation_graph,
+            entities_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb,
+            chunks_vdb=self.chunks_vdb,
+            text_chunks_db=self.text_chunks,
             global_config=asdict(self),
-            hashing_kv=self.llm_response_cache
-            or self.key_string_value_json_storage_cls(
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                ),
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-            ),
+            hashing_kv=self.llm_response_cache,
         )
-
-        param.hl_keywords = hl_keywords
-        param.ll_keywords = ll_keywords
-
-        # ---------------------
-        # STEP 2: Final Query Logic
-        # ---------------------
-
-        # Create a new string with the prompt and the keywords
-        ll_keywords_str = ", ".join(ll_keywords)
-        hl_keywords_str = ", ".join(hl_keywords)
-        formatted_question = f"{prompt}\n\n### Keywords:\nHigh-level: {hl_keywords_str}\nLow-level: {ll_keywords_str}\n\n### Query:\n{query}"
-
-        if param.mode in ["local", "global", "hybrid"]:
-            response = await kg_query_with_keywords(
-                formatted_question,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
-            )
-        elif param.mode == "naive":
-            response = await naive_query(
-                formatted_question,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
-            )
-        elif param.mode == "mix":
-            response = await mix_kg_vector_query(
-                formatted_question,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
-            )
-        else:
-            raise ValueError(f"Unknown mode {param.mode}")
 
         await self._query_done()
         return response
@@ -1535,21 +1444,6 @@ class LightRAG:
                 ]
             ]
         )
-
-    def _get_content_summary(self, content: str, max_length: int = 100) -> str:
-        """Get summary of document content
-
-        Args:
-            content: Original document content
-            max_length: Maximum length of summary
-
-        Returns:
-            Truncated content with ellipsis if needed
-        """
-        content = content.strip()
-        if len(content) <= max_length:
-            return content
-        return content[:max_length] + "..."
 
     async def get_processing_status(self) -> dict[str, int]:
         """Get current document processing status counts
@@ -2229,6 +2123,7 @@ class LightRAG:
                 cast(StorageNameSpace, storage_inst).index_done_callback()
                 for storage_inst in [  # type: ignore
                     self.entities_vdb,
+                    self.relationships_vdb,
                     self.chunk_entity_relation_graph,
                 ]
             ]
@@ -2766,6 +2661,12 @@ class LightRAG:
 
             # 9. Delete source entities
             for entity_name in source_entities:
+                if entity_name == target_entity:
+                    logger.info(
+                        f"Skipping deletion of '{entity_name}' as it's also the target entity"
+                    )
+                    continue
+
                 # Delete entity node from knowledge graph
                 await self.chunk_entity_relation_graph.delete_node(entity_name)
 
