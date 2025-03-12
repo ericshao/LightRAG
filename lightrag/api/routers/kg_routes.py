@@ -210,7 +210,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             result = await rag.aupdate_entity(decoded_entity_name, entity_data)
             
             if result["status"] == "failed":
-                raise HTTPException(status_code=404, detail=result["message"])
+                raise HTTPException(status_code=400, detail=result["message"])
                 
             return result
             

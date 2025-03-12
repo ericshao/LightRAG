@@ -136,10 +136,10 @@ async def update_entity(rag, entity_name: str, entity_data: dict[str, Any]) -> d
     """
     update_storage = False
     try:
-        formatted_entity_name = f'"{entity_name.upper()}"'
+        # formatted_entity_name = f'"{entity_name.upper()}"'
         
         # 检查实体是否存在
-        entity_exists = await rag.chunk_entity_relation_graph.has_node(formatted_entity_name)
+        entity_exists = await rag.chunk_entity_relation_graph.has_node(entity_name)
         if not entity_exists:
             return {
                 "status": "failed",
@@ -148,7 +148,7 @@ async def update_entity(rag, entity_name: str, entity_data: dict[str, Any]) -> d
             }
         
         # 获取现有节点数据
-        current_node_data = await rag.chunk_entity_relation_graph.get_node(formatted_entity_name)
+        current_node_data = await rag.chunk_entity_relation_graph.get_node(entity_name)
         if not current_node_data:
             current_node_data = {}
             
@@ -156,20 +156,20 @@ async def update_entity(rag, entity_name: str, entity_data: dict[str, Any]) -> d
         updated_node_data = {**current_node_data, **entity_data}
         
         # 保持source_id不变
-        if "source_id" in current_node_data and "source_id" not in entity_data:
-            updated_node_data["source_id"] = current_node_data["source_id"]
+        # if "source_id" in current_node_data and "source_id" not in entity_data:
+        #     updated_node_data["source_id"] = current_node_data["source_id"]
         
         # 更新图数据库中的节点
-        await rag.chunk_entity_relation_graph.upsert_node(formatted_entity_name, updated_node_data)
+        await rag.chunk_entity_relation_graph.upsert_node(entity_name, updated_node_data)
         
         # 更新向量数据库中的实体表示
-        entity_id = compute_mdhash_id(formatted_entity_name, prefix="ent-")
-        entity_content = f"{formatted_entity_name}{updated_node_data.get('description', '')}"
+        entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+        entity_content = f"{entity_name}{updated_node_data.get('description', '')}"
         
         await rag.entities_vdb.upsert({
             entity_id: {
                 "content": entity_content,
-                "entity_name": formatted_entity_name
+                "entity_name": entity_name
             }
         })
         

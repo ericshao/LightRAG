@@ -687,7 +687,7 @@ class LightRAG:
                         paragraphs = [p.strip() for p in doc.split("\n\n") if p.strip()]
                         clean_inputs.extend(paragraphs)
                     else:
-                        clean_txt = self.clean_text(doc) 
+                        clean_txt = clean_text(doc) 
                         if clean_txt:
                             clean_inputs.append(clean_txt)
             input = list(set(clean_inputs))

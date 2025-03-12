@@ -55,9 +55,9 @@ class Neo4JStorage(BaseGraphStorage):
         self._driver = None
         self._driver_lock = asyncio.Lock()
         # Add label cache related properties
-        self._labels_cache = set()
-        self._labels_cache_timestamp = 0
-        self._labels_cache_ttl = 600  # Cache valid for 10 minutes
+        # self._labels_cache = set()
+        # self._labels_cache_timestamp = 0
+        # self._labels_cache_ttl = 600  # Cache valid for 10 minutes
 
         URI = os.environ.get("NEO4J_URI", config.get("neo4j", "uri", fallback=None))
         USERNAME = os.environ.get(
@@ -181,44 +181,44 @@ class Neo4JStorage(BaseGraphStorage):
         # Noe4J handles persistence automatically
         pass
 
-    async def _refresh_labels_cache(self) -> None:
-        """Refresh the internal labels cache."""
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                query = "CALL db.labels() YIELD label RETURN label"
-                result = await session.run(query)
-                self._labels_cache = set([record["label"] for record in await result.data()])
-                self._labels_cache_timestamp = time.time()
-                logger.debug(f"Refreshed label cache, found {len(self._labels_cache)} labels")
-        except Exception as e:
-            logger.error(f"Error refreshing label cache: {e}")
+    # async def _refresh_labels_cache(self) -> None:
+    #     """Refresh the internal labels cache."""
+    #     try:
+    #         async with self._driver.session(database=self._DATABASE) as session:
+    #             query = "CALL db.labels() YIELD label RETURN label"
+    #             result = await session.run(query)
+    #             self._labels_cache = set([record["label"] for record in await result.data()])
+    #             self._labels_cache_timestamp = time.time()
+    #             logger.debug(f"Refreshed label cache, found {len(self._labels_cache)} labels")
+    #     except Exception as e:
+    #         logger.error(f"Error refreshing label cache: {e}")
 
-    async def _label_exists(self, label: str) -> bool:
-        """Check if a label exists in the Neo4j database."""
-        current_time = time.time()
+    # async def _label_exists(self, label: str) -> bool:
+    #     """Check if a label exists in the Neo4j database."""
+    #     current_time = time.time()
 
-        # Refresh cache if expired or empty
-        if (current_time - self._labels_cache_timestamp > self._labels_cache_ttl) or not self._labels_cache:
-            await self._refresh_labels_cache()
+    #     # Refresh cache if expired or empty
+    #     if (current_time - self._labels_cache_timestamp > self._labels_cache_ttl) or not self._labels_cache:
+    #         await self._refresh_labels_cache()
 
-        # First check the cache
-        if label in self._labels_cache:
-            return True
+    #     # First check the cache
+    #     if label in self._labels_cache:
+    #         return True
 
-        # If not in cache, might be a new label - check directly and update cache
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                query = f"MATCH (n:`{label}`) RETURN count(n) > 0 AS exists LIMIT 1"
-                result = await session.run(query)
-                exists = (await result.single())["exists"]
+    #     # If not in cache, might be a new label - check directly and update cache
+    #     try:
+    #         async with self._driver.session(database=self._DATABASE) as session:
+    #             query = f"MATCH (n:`{label}`) RETURN count(n) > 0 AS exists LIMIT 1"
+    #             result = await session.run(query)
+    #             exists = (await result.single())["exists"]
 
-                if exists:
-                    self._labels_cache.add(label)
+    #             if exists:
+    #                 self._labels_cache.add(label)
 
-                return exists
-        except Exception as e:
-            logger.error(f"Error checking label existence: {e}")
-            return False
+    #             return exists
+    #     except Exception as e:
+    #         logger.error(f"Error checking label existence: {e}")
+    #         return False
     async def has_node(self, node_id: str) -> bool:
         """
         Check if a node with the given label exists in the database
