@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import Button from '@/components/ui/Button'
 import {
   Table,
@@ -8,7 +9,7 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/Table'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
 import EmptyCard from '@/components/ui/EmptyCard'
 import Text from '@/components/ui/Text'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
@@ -29,6 +30,7 @@ type SortableColumn = 'updated_at' | 'created_at' | 'content_length' | 'chunks_c
 type StatusFilter = DocStatus | 'all';
 
 export default function DocumentManager() {
+  const { t } = useTranslation()
   const health = useBackendState.use.health()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
   // 添加排序状态
@@ -56,7 +58,7 @@ export default function DocumentManager() {
         setDocs(null)
       }
     } catch (err) {
-      toast.error('Failed to load documents\n' + errorMessage(err))
+      toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
     }
   }, [setDocs])
 
@@ -69,7 +71,7 @@ export default function DocumentManager() {
       const { status } = await scanNewDocuments()
       toast.message(status)
     } catch (err) {
-      toast.error('Failed to load documents\n' + errorMessage(err))
+      toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }))
     }
   }, [])
 
@@ -81,7 +83,7 @@ export default function DocumentManager() {
       try {
         await fetchDocuments()
       } catch (err) {
-        toast.error('Failed to get scan progress\n' + errorMessage(err))
+        toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
       }
     }, 5000)
     return () => clearInterval(interval)
@@ -154,7 +156,7 @@ export default function DocumentManager() {
   return (
     <Card className="!size-full !rounded-none !border-none">
       <CardHeader>
-        <CardTitle className="text-lg">Document Management</CardTitle>
+        <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-2">
@@ -162,11 +164,55 @@ export default function DocumentManager() {
             variant="outline"
             onClick={scanDocuments}
             side="bottom"
-            tooltip="Scan documents"
+            tooltip={t('documentPanel.documentManager.scanTooltip')}
             size="sm"
           >
-            <RefreshCwIcon /> Scan
+            <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
           </Button>
+          <div className="flex items-center gap-2 mb-4">
+            <FilterIcon className="h-4 w-4" />
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                variant={statusFilter === 'all' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('all')}
+              >
+                All ({documentCounts.all})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('processed')}
+                className="text-green-600"
+              >
+                Completed ({documentCounts.processed || 0})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('processing')}
+                className="text-blue-600"
+              >
+                Processing ({documentCounts.processing || 0})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('pending')}
+                className="text-yellow-600"
+              >
+                Pending ({documentCounts.pending || 0})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('failed')}
+                className="text-red-600"
+              >
+                Failed ({documentCounts.failed || 0})
+              </Button>
+            </div>
+          </div>
           <div className="flex-1" />
           <ClearDocumentsDialog />
           <UploadDocumentsDialog />
@@ -174,130 +220,83 @@ export default function DocumentManager() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Uploaded documents</CardTitle>
+            <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
+            <CardDescription>{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
           <CardContent>
             {!docs && (
               <EmptyCard
-                title="No documents uploaded"
-                description="upload documents to see them here"
+                title={t('documentPanel.documentManager.emptyTitle')}
+                description={t('documentPanel.documentManager.emptyDescription')}
               />
             )}
             {docs && (
-              <>
-                <div className="flex items-center gap-2 mb-4">
-                  <FilterIcon className="h-4 w-4" />
-                  <span>Filter:</span>
-                  <div className="flex gap-1">
-                    <Button
-                      size="sm"
-                      variant={statusFilter === 'all' ? 'default' : 'outline'}
-                      onClick={() => setStatusFilter('all')}
-                    >
-                      All ({documentCounts.all})
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={statusFilter === 'processed' ? 'default' : 'outline'}
-                      onClick={() => setStatusFilter('processed')}
-                      className="text-green-600"
-                    >
-                      Completed ({documentCounts.processed || 0})
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={statusFilter === 'processing' ? 'default' : 'outline'}
-                      onClick={() => setStatusFilter('processing')}
-                      className="text-blue-600"
-                    >
-                      Processing ({documentCounts.processing || 0})
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={statusFilter === 'pending' ? 'default' : 'outline'}
-                      onClick={() => setStatusFilter('pending')}
-                      className="text-yellow-600"
-                    >
-                      Pending ({documentCounts.pending || 0})
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={statusFilter === 'failed' ? 'default' : 'outline'}
-                      onClick={() => setStatusFilter('failed')}
-                      className="text-red-600"
-                    >
-                      Failed ({documentCounts.failed || 0})
-                    </Button>
-                  </div>
-                </div>
-
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID</TableHead>
-                      <TableHead>Summary</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Length</TableHead>
-                      <TableHead>Chunks</TableHead>
-                      <TableHead onClick={() => toggleSort('created_at')} className="cursor-pointer hover:bg-background/60">
-                        Created
-                        {sortColumn === 'created_at' && (
-                          sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
-                        )}
-                      </TableHead>
-                      <TableHead onClick={() => toggleSort('updated_at')} className="cursor-pointer hover:bg-background/60">
-                        Updated
-                        {sortColumn === 'updated_at' && (
-                          sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
-                        )}
-                      </TableHead>
-                      <TableHead>Metadata</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody className="text-sm">
-                    {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).map(([status, documents]) =>
-                      documents.map((doc) => (
-                        <TableRow key={doc.id}>
-                          <TableCell className="truncate font-mono">{doc.id}</TableCell>
-                          <TableCell className="max-w-xs min-w-24 truncate">
-                            <Text
-                              text={doc.content_summary}
-                              tooltip={doc.content_summary}
-                              tooltipClassName="max-w-none overflow-visible block"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            {status === 'processed' && (
-                              <span className="text-green-600">Completed</span>
-                            )}
-                            {status === 'processing' && (
-                              <span className="text-blue-600">Processing</span>
-                            )}
-                            {status === 'pending' && <span className="text-yellow-600">Pending</span>}
-                            {status === 'failed' && <span className="text-red-600">Failed</span>}
-                            {doc.error && (
-                              <span className="ml-2 text-red-500" title={doc.error}>
-                                ⚠️
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell>{doc.content_length ?? '-'}</TableCell>
-                          <TableCell>{doc.chunks_count ?? '-'}</TableCell>
-                          <TableCell className="truncate">
-                            {new Date(doc.created_at).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="truncate">
-                            {new Date(doc.updated_at).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="max-w-xs truncate">
-                            {doc.metadata ? JSON.stringify(doc.metadata) : '-'}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
+                    <TableHead onClick={() => toggleSort('created_at')} className="cursor-pointer hover:bg-background/60">
+                      {t('documentPanel.documentManager.columns.created')}
+                      {sortColumn === 'created_at' && (
+                        sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
+                      )}
+                    </TableHead>
+                    <TableHead onClick={() => toggleSort('updated_at')} className="cursor-pointer hover:bg-background/60">
+                      {t('documentPanel.documentManager.columns.updated')}
+                      {sortColumn === 'updated_at' && (
+                        sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
+                      )}
+                    </TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.metadata')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="text-sm">
+                  {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).map(([status, documents]) =>
+                    documents.map((doc) => (
+                      <TableRow key={doc.id}>
+                        <TableCell className="truncate font-mono">{doc.id}</TableCell>
+                        <TableCell className="max-w-xs min-w-24 truncate">
+                          <Text
+                            text={doc.content_summary}
+                            tooltip={doc.content_summary}
+                            tooltipClassName="max-w-none overflow-visible block"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {status === 'processed' && (
+                            <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
+                          )}
+                          {status === 'processing' && (
+                            <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
+                          )}
+                          {status === 'pending' && <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>}
+                          {status === 'failed' && <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>}
+                          {doc.error && (
+                            <span className="ml-2 text-red-500" title={doc.error}>
+                              ⚠️
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell>{doc.content_length ?? '-'}</TableCell>
+                        <TableCell>{doc.chunks_count ?? '-'}</TableCell>
+                        <TableCell className="truncate">
+                          {new Date(doc.created_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="truncate">
+                          {new Date(doc.updated_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="max-w-xs truncate">
+                          {doc.metadata ? JSON.stringify(doc.metadata) : '-'}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>
