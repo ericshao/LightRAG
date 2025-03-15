@@ -4,7 +4,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, final, Optional
+from typing import Any, final, Optional, Dict, Tuple
 import numpy as np
 import configparser
 
@@ -54,6 +54,13 @@ class Neo4JStorage(BaseGraphStorage):
         )
         self._driver = None
         self._driver_lock = asyncio.Lock()
+
+        # Cache for node and edge existence checks
+        self._node_existence_cache: Dict[str, Tuple[bool, float]] = {}  # (exists, timestamp)
+        self._edge_existence_cache: Dict[Tuple[str, str], Tuple[bool, float]] = {}  # ((source, target), (exists, timestamp))
+        self._cache_ttl = float(os.environ.get("NEO4J_CACHE_TTL", 300))  # Cache time-to-live in seconds
+        self._max_cache_size = int(os.environ.get("NEO4J_MAX_CACHE_SIZE", 10000))  # Maximum number of cache entries
+        self._cache_lock = asyncio.Lock()  # Lock for cache operations
 
         URI = os.environ.get("NEO4J_URI", config.get("neo4j", "uri", fallback=None))
         USERNAME = os.environ.get(
@@ -165,6 +172,11 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def close(self):
         """Close the Neo4j driver and release all resources"""
+        # Clear cache
+        async with self._cache_lock:
+            self._node_existence_cache.clear()
+            self._edge_existence_cache.clear()
+
         if self._driver:
             await self._driver.close()
             self._driver = None
@@ -191,6 +203,15 @@ class Neo4JStorage(BaseGraphStorage):
             ValueError: If node_id is invalid
             Exception: If there is an error executing the query
         """
+        # Check cache first
+        async with self._cache_lock:
+            if node_id in self._node_existence_cache:
+                exists, timestamp = self._node_existence_cache[node_id]
+                if time.time() - timestamp < self._cache_ttl:
+                    logger.debug(f"Node existence cache hit for {node_id}")
+                    return exists
+
+        # Cache miss or expired, query the database
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
@@ -198,8 +219,23 @@ class Neo4JStorage(BaseGraphStorage):
                 query = "MATCH (n:base {entity_id: $entity_id}) RETURN count(n) > 0 AS node_exists"
                 result = await session.run(query, entity_id=node_id)
                 single_result = await result.single()
+                exists = single_result["node_exists"]
+
+                # Update cache
+                async with self._cache_lock:
+                    self._node_existence_cache[node_id] = (exists, time.time())
+
+                    # Manage cache size
+                    if len(self._node_existence_cache) > self._max_cache_size:
+                        # Remove the oldest cache entry
+                        oldest_key = min(
+                            self._node_existence_cache.keys(),
+                            key=lambda k: self._node_existence_cache[k][1]
+                        )
+                        del self._node_existence_cache[oldest_key]
+
                 await result.consume()  # Ensure result is fully consumed
-                return single_result["node_exists"]
+                return exists
             except Exception as e:
                 logger.error(f"Error checking node existence for {node_id}: {str(e)}")
                 await result.consume()  # Ensure results are consumed even on error
@@ -220,6 +256,18 @@ class Neo4JStorage(BaseGraphStorage):
             ValueError: If either node_id is invalid
             Exception: If there is an error executing the query
         """
+        # Cache key is a tuple of sorted node IDs
+        cache_key = tuple(sorted([source_node_id, target_node_id]))
+
+        # Check cache first
+        async with self._cache_lock:
+            if cache_key in self._edge_existence_cache:
+                exists, timestamp = self._edge_existence_cache[cache_key]
+                if time.time() - timestamp < self._cache_ttl:
+                    logger.debug(f"Edge existence cache hit for {source_node_id}-{target_node_id}")
+                    return exists
+
+        # Cache miss or expired, query the database
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
@@ -234,14 +282,51 @@ class Neo4JStorage(BaseGraphStorage):
                     target_entity_id=target_node_id,
                 )
                 single_result = await result.single()
+                exists = single_result["edgeExists"]
+
+                # Update cache
+                async with self._cache_lock:
+                    self._edge_existence_cache[cache_key] = (exists, time.time())
+
+                    # Manage cache size
+                    if len(self._edge_existence_cache) > self._max_cache_size:
+                        # Remove the oldest cache entry
+                        oldest_key = min(
+                            self._edge_existence_cache.keys(),
+                            key=lambda k: self._edge_existence_cache[k][1]
+                        )
+                        del self._edge_existence_cache[oldest_key]
+
                 await result.consume()  # Ensure result is fully consumed
-                return single_result["edgeExists"]
+                return exists
             except Exception as e:
                 logger.error(
                     f"Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}"
                 )
                 await result.consume()  # Ensure results are consumed even on error
                 raise
+
+    async def _clear_node_cache(self, node_id: str) -> None:
+        """Clear the cache for the specified node"""
+        async with self._cache_lock:
+            if node_id in self._node_existence_cache:
+                del self._node_existence_cache[node_id]
+
+            # 清除与该节点相关的边缓存
+            keys_to_remove = []
+            for key in self._edge_existence_cache:
+                if node_id in key:
+                    keys_to_remove.append(key)
+
+            for key in keys_to_remove:
+                del self._edge_existence_cache[key]
+
+    async def _clear_edge_cache(self, source_node_id: str, target_node_id: str) -> None:
+        """Clear the cache for the specified edge"""
+        cache_key = tuple(sorted([source_node_id, target_node_id]))
+        async with self._cache_lock:
+            if cache_key in self._edge_existence_cache:
+                del self._edge_existence_cache[cache_key]
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its label identifier.
@@ -550,6 +635,9 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()  # Ensure result is fully consumed
 
                 await session.execute_write(execute_upsert)
+
+                # Clear related cache after update
+                await self._clear_node_cache(node_id)
         except Exception as e:
             logger.error(f"Error during upsert: {str(e)}")
             raise
@@ -612,6 +700,9 @@ class Neo4JStorage(BaseGraphStorage):
                         await result.consume()  # Ensure result is consumed
 
                 await session.execute_write(execute_upsert)
+
+                # Clear related cache after update
+                await self._clear_edge_cache(source_node_id, target_node_id)
         except Exception as e:
             logger.error(f"Error during edge upsert: {str(e)}")
             raise
@@ -962,6 +1053,9 @@ class Neo4JStorage(BaseGraphStorage):
         try:
             async with self._driver.session(database=self._DATABASE) as session:
                 await session.execute_write(_do_delete)
+
+                # Clear related cache after deletion
+                await self._clear_node_cache(node_id)
         except Exception as e:
             logger.error(f"Error during node deletion: {str(e)}")
             raise
@@ -1021,6 +1115,9 @@ class Neo4JStorage(BaseGraphStorage):
             try:
                 async with self._driver.session(database=self._DATABASE) as session:
                     await session.execute_write(_do_delete_edge)
+
+                    # Clear related cache after deletion
+                    await self._clear_edge_cache(source, target)
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
