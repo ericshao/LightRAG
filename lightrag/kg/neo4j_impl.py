@@ -176,6 +176,18 @@ class Neo4JStorage(BaseGraphStorage):
         # Noe4J handles persistence automatically
         pass
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+                neo4jExceptions.ClientError,
+            )
+        ),
+    )
     async def has_node(self, node_id: str) -> bool:
         """
         Check if a node with the given label exists in the database
@@ -201,9 +213,24 @@ class Neo4JStorage(BaseGraphStorage):
                 return single_result["node_exists"]
             except Exception as e:
                 logger.error(f"Error checking node existence for {node_id}: {str(e)}")
-                await result.consume()  # Ensure results are consumed even on error
+                try:
+                    await result.consume()  # Ensure results are consumed even on error
+                except:
+                    pass  # Ignore if result is not defined or not accessible
                 raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+                neo4jExceptions.ClientError,
+            )
+        ),
+    )
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if an edge exists between two nodes
@@ -239,7 +266,10 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}"
                 )
-                await result.consume()  # Ensure results are consumed even on error
+                try:
+                    await result.consume()  # Ensure results are consumed even on error
+                except:
+                    pass  # Ignore if result is not defined or not accessible
                 raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
