@@ -1,8 +1,10 @@
 # Build stage
-FROM python:3.11-slim AS builder
+FROM registry.cn-shanghai.aliyuncs.com/welogix/python:3.11-slim AS builder
 
 WORKDIR /app
 
+RUN echo "deb http://mirrors.aliyun.com/debian/ bookworm main contrib non-free" > /etc/apt/sources.list && \
+    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm main contrib non-free" >> /etc/apt/sources.list
 # Install Rust and required build dependencies
 RUN apt-get update && apt-get install -y \
     curl \
@@ -18,11 +20,12 @@ COPY lightrag/api/requirements.txt ./lightrag/api/
 
 # Install dependencies
 ENV PATH="/root/.cargo/bin:${PATH}"
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install --user --no-cache-dir -r requirements.txt
 RUN pip install --user --no-cache-dir -r lightrag/api/requirements.txt
 
 # Final stage
-FROM python:3.11-slim
+FROM registry.cn-shanghai.aliyuncs.com/welogix/python:3.11-slim
 
 WORKDIR /app
 
