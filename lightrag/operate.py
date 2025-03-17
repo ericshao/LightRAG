@@ -581,23 +581,43 @@ async def extract_entities(
 
     graph_db_lock = get_graph_db_lock(enable_logging=False)
 
+    max_concurrent_updates = int(os.getenv("MAX_CONCURRENT_GRAPH_DB_UPDATES", 20))
+    # Batch process to merge and upsert nodes and edges
+    async def batch_process(items, processor_func):
+        results = []
+        # Limit the number of concurrent updates to avoid overwhelming the database
+        semaphore = asyncio.Semaphore(max_concurrent_updates)
+
+        async def process_with_semaphore(item_args):
+            async with semaphore:
+                return await processor_func(*item_args)
+
+        tasks = []
+        for item_args in items:
+            task = asyncio.create_task(process_with_semaphore(item_args))
+            tasks.append(task)
+
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            if result:
+                results.append(result)
+
+        return results
+
     # Ensure that nodes and edges are merged and upserted atomically
     async with graph_db_lock:
-        all_entities_data = await asyncio.gather(
-            *[
-                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-                for k, v in maybe_nodes.items()
-            ]
-        )
+        log_message = f"Start updating KG: {len(maybe_nodes)} entities, {len(maybe_edges)} relationships"
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
-        all_relationships_data = await asyncio.gather(
-            *[
-                _merge_edges_then_upsert(
-                    k[0], k[1], v, knowledge_graph_inst, global_config
-                )
-                for k, v in maybe_edges.items()
-            ]
-        )
+        node_args = [(k, v, knowledge_graph_inst, global_config) for k, v in maybe_nodes.items()]
+        all_entities_data = await batch_process(node_args, _merge_nodes_then_upsert)
+
+        edge_args = [(k[0], k[1], v, knowledge_graph_inst, global_config) for k, v in maybe_edges.items()]
+        all_relationships_data = await batch_process(edge_args, _merge_edges_then_upsert)
 
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."
