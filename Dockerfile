@@ -1,10 +1,14 @@
 # Build stage
-FROM registry.cn-shanghai.aliyuncs.com/welogix/python:3.11-slim AS builder
+FROM func.ink/python:3.11.7-slim-bookworm AS builder
 
 WORKDIR /app
 
-RUN echo "deb http://mirrors.aliyun.com/debian/ bookworm main contrib non-free" > /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm main contrib non-free" >> /etc/apt/sources.list
+RUN test -e /etc/apt/sources.list || echo "deb http://mirrors.aliyun.com/debian bookworm main" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-updates main" >> /etc/apt/sources.list
+
+ENV RUSTUP_DIST_SERVER=https://mirrors.aliyun.com/rustup
+ENV RUSTUP_UPDATE_ROOT=https://mirrors.aliyun.com/rustup/rustup
 # Install Rust and required build dependencies
 RUN apt-get update && apt-get install -y \
     curl \
@@ -25,7 +29,7 @@ RUN pip install --user --no-cache-dir -r requirements.txt
 RUN pip install --user --no-cache-dir -r lightrag/api/requirements.txt
 
 # Final stage
-FROM registry.cn-shanghai.aliyuncs.com/welogix/python:3.11-slim
+FROM func.ink/python:3.11.7-slim-bookworm
 
 WORKDIR /app
 
