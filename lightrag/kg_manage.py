@@ -7,11 +7,13 @@ This module provides functions for managing entities and relationships in the kn
 import asyncio
 from typing import Any, Dict, List, cast
 
+from lightrag.lightrag import LightRAG
+
 from .base import StorageNameSpace
 from .utils import compute_mdhash_id, logger
 
 
-async def insert_custom_relations(rag, relations_data: list[dict[str, Any]]) -> dict[str, Any]:
+async def insert_custom_relations(rag: LightRAG, relations_data: list[dict[str, Any]]) -> dict[str, Any]:
     """
     为已存在的实体之间添加自定义关系（异步版本）
     
@@ -116,7 +118,7 @@ async def insert_custom_relations(rag, relations_data: list[dict[str, Any]]) -> 
         raise e
 
 
-async def update_entity(rag, entity_name: str, entity_data: dict[str, Any]) -> dict[str, Any]:
+async def update_entity(rag: LightRAG, entity_name: str, entity_data: dict[str, Any]) -> dict[str, Any]:
     """
     更新已存在的实体信息（异步版本）
     
@@ -139,26 +141,22 @@ async def update_entity(rag, entity_name: str, entity_data: dict[str, Any]) -> d
         # formatted_entity_name = f'"{entity_name.upper()}"'
         
         # 检查实体是否存在
-        entity_exists = await rag.chunk_entity_relation_graph.has_node(entity_name)
-        if not entity_exists:
-            return {
-                "status": "failed",
-                "message": f"实体 '{entity_name}' 不存在",
-                "updated_data": None
-            }
+        # entity_exists = await rag.chunk_entity_relation_graph.has_node(entity_name)
+        # if not entity_exists:
+        #     return {
+        #         "status": "failed",
+        #         "message": f"实体 '{entity_name}' 不存在",
+        #         "updated_data": None
+        #     }
         
         # 获取现有节点数据
         current_node_data = await rag.chunk_entity_relation_graph.get_node(entity_name)
         if not current_node_data:
             current_node_data = {}
-            
+
         # 合并新数据，保留源ID等关键信息
         updated_node_data = {**current_node_data, **entity_data}
-        
-        # 保持source_id不变
-        # if "source_id" in current_node_data and "source_id" not in entity_data:
-        #     updated_node_data["source_id"] = current_node_data["source_id"]
-        
+
         # 更新图数据库中的节点
         await rag.chunk_entity_relation_graph.upsert_node(entity_name, updated_node_data)
         
@@ -169,7 +167,10 @@ async def update_entity(rag, entity_name: str, entity_data: dict[str, Any]) -> d
         await rag.entities_vdb.upsert({
             entity_id: {
                 "content": entity_content,
-                "entity_name": entity_name
+                "entity_name": entity_name,
+                "source_id": updated_node_data.get("source_id", ""),
+                "description": updated_node_data.get("description", ""),
+                "entity_type": updated_node_data.get("entity_type", ""),
             }
         })
         
@@ -193,7 +194,7 @@ async def update_entity(rag, entity_name: str, entity_data: dict[str, Any]) -> d
         raise e
 
 
-async def update_relation(rag, src_entity: str, tgt_entity: str, relation_data: dict[str, Any]) -> dict[str, Any]:
+async def update_relation(rag: LightRAG, src_entity: str, tgt_entity: str, relation_data: dict[str, Any]) -> dict[str, Any]:
     """
     更新已存在的关系信息（异步版本）
     
@@ -293,7 +294,7 @@ async def update_relation(rag, src_entity: str, tgt_entity: str, relation_data: 
         raise e
 
 
-async def _insert_done(rag) -> None:
+async def _insert_done(rag: LightRAG) -> None:
     """更新存储索引"""
     tasks = [
         cast(StorageNameSpace, storage_inst).index_done_callback()
