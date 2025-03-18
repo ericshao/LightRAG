@@ -139,6 +139,7 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
+    # logger.info(f"record_attributes: {record_attributes} chunk_key: {chunk_key}")
     if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
         return None
 
@@ -527,6 +528,7 @@ async def extract_entities(
             glean_result = await _user_llm_func_with_cache(
                 continue_prompt, history_messages=history
             )
+            logger.info(f"LLM glean {now_glean_index} result: {glean_result}")
 
             history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
 
@@ -548,6 +550,8 @@ async def extract_entities(
                 if_loop_prompt, history_messages=history
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
+            logger.info(f"LLM if_loop result: {if_loop_result}")
+            # if_loop_result = 'NO'
             if if_loop_result != "yes":
                 break
 
@@ -577,23 +581,43 @@ async def extract_entities(
 
     graph_db_lock = get_graph_db_lock(enable_logging=False)
 
+    max_concurrent_updates = int(os.getenv("MAX_CONCURRENT_GRAPH_DB_UPDATES", 20))
+    # Batch process to merge and upsert nodes and edges
+    async def batch_process(items, processor_func):
+        results = []
+        # Limit the number of concurrent updates to avoid overwhelming the database
+        semaphore = asyncio.Semaphore(max_concurrent_updates)
+
+        async def process_with_semaphore(item_args):
+            async with semaphore:
+                return await processor_func(*item_args)
+
+        tasks = []
+        for item_args in items:
+            task = asyncio.create_task(process_with_semaphore(item_args))
+            tasks.append(task)
+
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            if result:
+                results.append(result)
+
+        return results
+
     # Ensure that nodes and edges are merged and upserted atomically
     async with graph_db_lock:
-        all_entities_data = await asyncio.gather(
-            *[
-                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-                for k, v in maybe_nodes.items()
-            ]
-        )
+        log_message = f"Start updating KG: {len(maybe_nodes)} entities, {len(maybe_edges)} relationships"
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
-        all_relationships_data = await asyncio.gather(
-            *[
-                _merge_edges_then_upsert(
-                    k[0], k[1], v, knowledge_graph_inst, global_config
-                )
-                for k, v in maybe_edges.items()
-            ]
-        )
+        node_args = [(k, v, knowledge_graph_inst, global_config) for k, v in maybe_nodes.items()]
+        all_entities_data = await batch_process(node_args, _merge_nodes_then_upsert)
+
+        edge_args = [(k[0], k[1], v, knowledge_graph_inst, global_config) for k, v in maybe_edges.items()]
+        all_relationships_data = await batch_process(edge_args, _merge_edges_then_upsert)
 
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."
@@ -1281,9 +1305,10 @@ async def _get_node_data(
         )
     relations_context = list_of_list_to_csv(relations_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
+        doc_id = t.get("full_doc_id", "Unknown")
+        text_units_section_list.append([i, t["content"], doc_id])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1531,9 +1556,10 @@ async def _get_edge_data(
         )
     entities_context = list_of_list_to_csv(entites_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
+        doc_id = t.get("full_doc_id", "Unknown")
+        text_units_section_list.append([i, t["content"], doc_id])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 

@@ -175,6 +175,7 @@ async def openai_complete(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        temperature=0.7,
         **kwargs,
     )
 

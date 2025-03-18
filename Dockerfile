@@ -1,8 +1,14 @@
 # Build stage
-FROM python:3.11-slim AS builder
+FROM func.ink/python:3.11.7-slim-bookworm AS builder
 
 WORKDIR /app
 
+RUN test -e /etc/apt/sources.list || echo "deb http://mirrors.aliyun.com/debian bookworm main" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-updates main" >> /etc/apt/sources.list
+
+ENV RUSTUP_DIST_SERVER=https://mirrors.aliyun.com/rustup
+ENV RUSTUP_UPDATE_ROOT=https://mirrors.aliyun.com/rustup/rustup
 # Install Rust and required build dependencies
 RUN apt-get update && apt-get install -y \
     curl \
@@ -18,11 +24,12 @@ COPY lightrag/api/requirements.txt ./lightrag/api/
 
 # Install dependencies
 ENV PATH="/root/.cargo/bin:${PATH}"
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install --user --no-cache-dir -r requirements.txt
 RUN pip install --user --no-cache-dir -r lightrag/api/requirements.txt
 
 # Final stage
-FROM python:3.11-slim
+FROM func.ink/python:3.11.7-slim-bookworm
 
 WORKDIR /app
 

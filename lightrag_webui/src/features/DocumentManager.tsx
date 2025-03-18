@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useTabVisibility } from '@/contexts/useTabVisibility'
 import Button from '@/components/ui/Button'
@@ -16,17 +16,29 @@ import Text from '@/components/ui/Text'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 
-import { getDocuments, scanNewDocuments, DocsStatusesResponse } from '@/api/lightrag'
+import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon } from 'lucide-react'
+import { RefreshCwIcon, ChevronUpIcon, ChevronDownIcon, FilterIcon } from 'lucide-react'
+
+// 定义排序方向类型
+type SortDirection = 'asc' | 'desc' | null;
+// 定义可排序列类型
+type SortableColumn = 'updated_at' | 'created_at' | 'content_length' | 'chunks_count';
+// 定义文档状态类型
+type StatusFilter = DocStatus | 'all';
 
 export default function DocumentManager() {
   const { t } = useTranslation()
   const health = useBackendState.use.health()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
+  // 添加排序状态
+  const [sortColumn, setSortColumn] = useState<SortableColumn | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(null);
+  // 添加过滤状态
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const { isTabVisible } = useTabVisibility()
   const isDocumentsTabVisible = isTabVisible('documents')
   const initialLoadRef = useRef(false)
@@ -88,6 +100,70 @@ export default function DocumentManager() {
     return () => clearInterval(interval)
   }, [health, fetchDocuments, t, isDocumentsTabVisible])
 
+  // 过滤和排序文档
+  const filteredAndSortedDocs = useMemo(() => {
+    if (!docs) return null;
+
+    // 创建一个过滤后的文档对象
+    let filteredDocs = { ...docs };
+
+    // 应用状态过滤
+    if (statusFilter !== 'all') {
+      filteredDocs = {
+        ...docs,
+        statuses: {
+          pending: [],
+          processing: [],
+          processed: [],
+          failed: [],
+          [statusFilter]: docs.statuses[statusFilter] || []
+        }
+      };
+    }
+
+    // 如果没有排序，直接返回过滤后的文档
+    if (!sortColumn || !sortDirection) return filteredDocs;
+
+    // 应用排序
+    const sortedStatuses = Object.entries(filteredDocs.statuses).reduce((acc, [status, documents]) => {
+      const sortedDocuments = [...documents].sort((a, b) => {
+        if (sortDirection === 'asc') {
+          return (a[sortColumn] ?? 0) > (b[sortColumn] ?? 0) ? 1 : -1;
+        } else {
+          return (a[sortColumn] ?? 0) < (b[sortColumn] ?? 0) ? 1 : -1;
+        }
+      });
+      acc[status as DocStatus] = sortedDocuments;
+      return acc;
+    }, {} as DocsStatusesResponse['statuses']);
+
+    return { ...filteredDocs, statuses: sortedStatuses };
+  }, [docs, sortColumn, sortDirection, statusFilter]);
+
+  // 切换排序状态
+  const toggleSort = (column: SortableColumn) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+  };
+
+  // 计算各状态文档数量
+  const documentCounts = useMemo(() => {
+    if (!docs) return { all: 0 } as Record<string, number>;
+
+    const counts: Record<string, number> = { all: 0 };
+
+    Object.entries(docs.statuses).forEach(([status, documents]) => {
+      counts[status as DocStatus] = documents.length;
+      counts.all += documents.length;
+    });
+
+    return counts;
+  }, [docs]);
+
   return (
     <Card className="!size-full !rounded-none !border-none">
       <CardHeader>
@@ -104,6 +180,50 @@ export default function DocumentManager() {
           >
             <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
           </Button>
+          <div className="flex items-center gap-2 mb-4">
+            <FilterIcon className="h-4 w-4" />
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                variant={statusFilter === 'all' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('all')}
+              >
+                {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('processed')}
+                className="text-green-600"
+              >
+                {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('processing')}
+                className="text-blue-600"
+              >
+                {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('pending')}
+                className="text-yellow-600"
+              >
+                {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
+              </Button>
+              <Button
+                size="sm"
+                variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
+                onClick={() => setStatusFilter('failed')}
+                className="text-red-600"
+              >
+                {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
+              </Button>
+            </div>
+          </div>
           <div className="flex-1" />
           <ClearDocumentsDialog />
           <UploadDocumentsDialog />
@@ -114,7 +234,6 @@ export default function DocumentManager() {
             <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
             <CardDescription>{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
-
           <CardContent>
             {!docs && (
               <EmptyCard
@@ -131,13 +250,23 @@ export default function DocumentManager() {
                     <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                     <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                     <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
+                    <TableHead onClick={() => toggleSort('created_at')} className="cursor-pointer hover:bg-background/60">
+                      {t('documentPanel.documentManager.columns.created')}
+                      {sortColumn === 'created_at' && (
+                        sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
+                      )}
+                    </TableHead>
+                    <TableHead onClick={() => toggleSort('updated_at')} className="cursor-pointer hover:bg-background/60">
+                      {t('documentPanel.documentManager.columns.updated')}
+                      {sortColumn === 'updated_at' && (
+                        sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
+                      )}
+                    </TableHead>
                     <TableHead>{t('documentPanel.documentManager.columns.metadata')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody className="text-sm">
-                  {Object.entries(docs.statuses).map(([status, documents]) =>
+                  {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).map(([status, documents]) =>
                     documents.map((doc) => (
                       <TableRow key={doc.id}>
                         <TableCell className="truncate font-mono">{doc.id}</TableCell>
