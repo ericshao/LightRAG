@@ -188,7 +188,7 @@ export default function DocumentManager() {
                 variant={statusFilter === 'all' ? 'secondary' : 'outline'}
                 onClick={() => setStatusFilter('all')}
               >
-                All ({documentCounts.all})
+                {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
               </Button>
               <Button
                 size="sm"
@@ -196,7 +196,7 @@ export default function DocumentManager() {
                 onClick={() => setStatusFilter('processed')}
                 className="text-green-600"
               >
-                Completed ({documentCounts.processed || 0})
+                {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
               </Button>
               <Button
                 size="sm"
@@ -204,7 +204,7 @@ export default function DocumentManager() {
                 onClick={() => setStatusFilter('processing')}
                 className="text-blue-600"
               >
-                Processing ({documentCounts.processing || 0})
+                {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
               </Button>
               <Button
                 size="sm"
@@ -212,7 +212,7 @@ export default function DocumentManager() {
                 onClick={() => setStatusFilter('pending')}
                 className="text-yellow-600"
               >
-                Pending ({documentCounts.pending || 0})
+                {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
               </Button>
               <Button
                 size="sm"
@@ -220,7 +220,7 @@ export default function DocumentManager() {
                 onClick={() => setStatusFilter('failed')}
                 className="text-red-600"
               >
-                Failed ({documentCounts.failed || 0})
+                {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
               </Button>
             </div>
           </div>
