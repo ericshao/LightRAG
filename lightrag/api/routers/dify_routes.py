@@ -70,7 +70,7 @@ def format_kg_to_json(kg_context: str) -> str:
     # 使用正则表达式识别不同的部分
     entity_match = re.search(r'-----Entities-----\s*```csv\s*(.*?)```', kg_context, re.DOTALL)
     relation_match = re.search(r'-----Relationships-----\s*```csv\s*(.*?)```', kg_context, re.DOTALL)
-    source_match = re.search(r'-----Sources-----\s*```csv\s*(.*?)```', kg_context, re.DOTALL)
+    # source_match = re.search(r'-----Sources-----\s*```csv\s*(.*?)```', kg_context, re.DOTALL)
     
     # 解析实体
     if entity_match:
@@ -130,32 +130,32 @@ def format_kg_to_json(kg_context: str) -> str:
             result["relationships"].append(relation_dict)
     
     # 解析来源
-    if source_match:
-        source_csv = source_match.group(1)
-        reader = csv.reader(io.StringIO(source_csv), delimiter=',')
-        headers = next(reader)
-        headers = [h.strip() for h in headers]
+    # if source_match:
+    #     source_csv = source_match.group(1)
+    #     reader = csv.reader(io.StringIO(source_csv), delimiter=',')
+    #     headers = next(reader)
+    #     headers = [h.strip() for h in headers]
         
-        for row in reader:
-                        # 如果row去除空格后为空，则跳过
-            if not row or all(not cell.strip() for cell in row):
-                continue
-            source_dict = {}
-            for i, value in enumerate(row):
-                if i < len(headers):
-                    # 移除头尾的引号
-                    value = value.strip()
-                    if value.startswith('"') and value.endswith('"'):
-                        value = value[1:-1]
+    #     for row in reader:
+    #                     # 如果row去除空格后为空，则跳过
+    #         if not row or all(not cell.strip() for cell in row):
+    #             continue
+    #         source_dict = {}
+    #         for i, value in enumerate(row):
+    #             if i < len(headers):
+    #                 # 移除头尾的引号
+    #                 value = value.strip()
+    #                 if value.startswith('"') and value.endswith('"'):
+    #                     value = value[1:-1]
                     
-                    # 处理<SEP>分隔的字段
-                    if "<SEP>" in value:
-                        value = [part.strip() for part in value.split("<SEP>")]
+    #                 # 处理<SEP>分隔的字段
+    #                 if "<SEP>" in value:
+    #                     value = [part.strip() for part in value.split("<SEP>")]
                     
-                    source_dict[headers[i]] = value
-            result["sources"].append(source_dict)
+    #                 source_dict[headers[i]] = value
+    #         result["sources"].append(source_dict)
     
-    logger.info(f"kg_JSON: {result}")
+    logger.info(f"KG_JSON:\n {result}")
     # 转换为JSON字符串
     return json.dumps(result, ensure_ascii=False, indent=2)
 

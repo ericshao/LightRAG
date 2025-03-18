@@ -515,20 +515,23 @@ async def extract_entities(
             **context_base, input_text="{input_text}"
         ).format(**context_base, input_text=content)
 
-        final_result = await _user_llm_func_with_cache(hint_prompt)
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
+        inital_result = await _user_llm_func_with_cache(hint_prompt)
+        logger.info(f"LLM inital_result:\n {inital_result}")
+        history = pack_user_ass_to_openai_messages(hint_prompt, inital_result)
 
         # Process initial extraction
-        maybe_nodes, maybe_edges = await _process_extraction_result(
-            final_result, chunk_key
-        )
+        # maybe_nodes, maybe_edges = await _process_extraction_result(
+        #     inital_result, chunk_key
+        # )
+        maybe_nodes = defaultdict(list)
+        maybe_edges = defaultdict(list)
 
         # Process additional gleaning results
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await _user_llm_func_with_cache(
                 continue_prompt, history_messages=history
             )
-            logger.info(f"LLM glean {now_glean_index} result: {glean_result}")
+            logger.info(f"LLM glean {now_glean_index} result:\n {glean_result}")
 
             history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
 
