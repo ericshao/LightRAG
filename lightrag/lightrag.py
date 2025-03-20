@@ -716,38 +716,24 @@ class LightRAG:
             }
         else:
             # Clean input text and remove duplicates
-            clean_inputs = []
-            if isinstance(input, list):
-                for doc in input:
-                    # 如果内容包含连续两个换行，则按照段落分割
-                    if "\n\n" in doc:
-                        paragraphs = [p.strip() for p in doc.split("\n\n") if p.strip()]
-                        clean_inputs.extend(paragraphs)
-                    else:
-                        clean_txt = clean_text(doc) 
-                        if clean_txt:
-                            clean_inputs.append(clean_txt)
-            input = list(set(clean_inputs))
-            # Generate contents dict of MD5 hash IDs and documents
-            contents = {compute_mdhash_id(doc, prefix="doc-"): doc for doc in input}
-            # cleaned_input = [
-            #     (clean_text(doc), path) for doc, path in zip(input, file_paths)
-            # ]
-            # unique_content_with_paths = {}
+            cleaned_input = [
+                (clean_text(doc), path) for doc, path in zip(input, file_paths)
+            ]
+            unique_content_with_paths = {}
 
-            # # Keep track of unique content and their paths
-            # for content, path in cleaned_input:
-            #     if content not in unique_content_with_paths:
-            #         unique_content_with_paths[content] = path
+            # Keep track of unique content and their paths
+            for content, path in cleaned_input:
+                if content not in unique_content_with_paths:
+                    unique_content_with_paths[content] = path
 
-            # # Generate contents dict of MD5 hash IDs and documents with paths
-            # contents = {
-            #     compute_mdhash_id(content, prefix="doc-"): {
-            #         "content": content,
-            #         "file_path": path,
-            #     }
-            #     for content, path in unique_content_with_paths.items()
-            # }
+            # Generate contents dict of MD5 hash IDs and documents with paths
+            contents = {
+                compute_mdhash_id(content, prefix="doc-"): {
+                    "content": content,
+                    "file_path": path,
+                }
+                for content, path in unique_content_with_paths.items()
+            }
 
         # 2. Remove duplicate contents
         unique_contents = {}
