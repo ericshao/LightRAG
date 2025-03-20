@@ -1,8 +1,8 @@
 import axios, { AxiosError } from 'axios'
-import { backendBaseUrl, webuiPrefix } from '@/lib/constants'
+import { backendBaseUrl } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
-import { useAuthStore } from '@/stores/state'
+import { navigationService } from '@/services/navigation'
 
 // Types
 export type LightragNodeType = {
@@ -157,20 +157,12 @@ axiosInstance.interceptors.request.use((config) => {
   const apiKey = useSettingsStore.getState().apiKey
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
 
-  // Check authentication status for paths that require authentication
-  const authRequiredPaths = ['/documents', '/graphs', '/query', '/health']; // Add all paths that require authentication
-  const isAuthRequired = authRequiredPaths.some(path => config.url?.includes(path));
-
-  if (isAuthRequired && !token && config.url !== '/login') {
-    // Cancel the request and return a rejected Promise
-    return Promise.reject(new Error('Authentication required'));
-  }
-
-  if (apiKey) {
-    config.headers['X-API-Key'] = apiKey
-  }
+  // Always include token if it exists, regardless of path
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`
+  }
+  if (apiKey) {
+    config.headers['X-API-Key'] = apiKey
   }
   return config
 })
@@ -181,15 +173,14 @@ axiosInstance.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response) {
       if (error.response?.status === 401) {
-        localStorage.removeItem('LIGHTRAG-API-TOKEN');
-        sessionStorage.clear();
-        useAuthStore.getState().logout();
-
-        if (window.location.pathname !== `${webuiPrefix}/#/login`) {
-          window.location.href = `${webuiPrefix}/#/login`;
+        // For login API, throw error directly
+        if (error.config?.url?.includes('/login')) {
+          throw error;
         }
-
-        return Promise.reject(error);
+        // For other APIs, navigate to login page
+        navigationService.navigateToLogin();
+        // Return a never-resolving promise to prevent further execution
+        return new Promise(() => {});
       }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(

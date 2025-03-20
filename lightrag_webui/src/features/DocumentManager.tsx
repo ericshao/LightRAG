@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useTabVisibility } from '@/contexts/useTabVisibility'
+import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
 import {
   Table,
@@ -39,9 +39,8 @@ export default function DocumentManager() {
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
   // 添加过滤状态
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const { isTabVisible } = useTabVisibility()
-  const isDocumentsTabVisible = isTabVisible('documents')
-  const initialLoadRef = useRef(false)
+
+  const currentTab = useSettingsStore.use.currentTab()
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -57,7 +56,6 @@ export default function DocumentManager() {
         } else {
           setDocs(null)
         }
-        // console.log(docs)
       } else {
         setDocs(null)
       }
@@ -66,13 +64,12 @@ export default function DocumentManager() {
     }
   }, [setDocs, t])
 
-  // Only fetch documents when the tab becomes visible for the first time
+  // Fetch documents when the tab becomes visible
   useEffect(() => {
-    if (isDocumentsTabVisible && !initialLoadRef.current) {
+    if (currentTab === 'documents') {
       fetchDocuments()
-      initialLoadRef.current = true
     }
-  }, [isDocumentsTabVisible, fetchDocuments])
+  }, [currentTab, fetchDocuments])
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -83,9 +80,9 @@ export default function DocumentManager() {
     }
   }, [t])
 
-  // Only set up polling when the tab is visible and health is good
+  // Set up polling when the documents tab is active and health is good
   useEffect(() => {
-    if (!isDocumentsTabVisible || !health) {
+    if (currentTab !== 'documents' || !health) {
       return
     }
 
@@ -98,7 +95,7 @@ export default function DocumentManager() {
     }, 5000)
 
     return () => clearInterval(interval)
-  }, [health, fetchDocuments, t, isDocumentsTabVisible])
+  }, [health, fetchDocuments, t, currentTab])
 
   // 过滤和排序文档
   const filteredAndSortedDocs = useMemo(() => {
