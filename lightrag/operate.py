@@ -562,11 +562,13 @@ async def extract_entities(
         history = pack_user_ass_to_openai_messages(hint_prompt, inital_result)
 
         # Process initial extraction
-        # maybe_nodes, maybe_edges = await _process_extraction_result(
-        #     inital_result, chunk_key
-        # )
-        maybe_nodes = defaultdict(list)
-        maybe_edges = defaultdict(list)
+        if entity_extract_max_gleaning == -1:
+            maybe_nodes, maybe_edges = await _process_extraction_result(
+                inital_result, chunk_key
+            )
+        else:
+            maybe_nodes = defaultdict(list)
+            maybe_edges = defaultdict(list)
 
         # Process additional gleaning results
         for now_glean_index in range(entity_extract_max_gleaning):

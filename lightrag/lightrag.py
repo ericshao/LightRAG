@@ -99,7 +99,7 @@ class LightRAG:
     # Entity extraction
     # ---
 
-    entity_extract_max_gleaning: int = field(default=int(os.getenv("MAX_EXTRACT_GLEANING", 2)))
+    entity_extract_max_gleaning: int = field(default=int(os.getenv("MAX_EXTRACT_GLEANING", -1)))
     """Maximum number of entity extraction attempts for ambiguous content."""
 
     entity_summary_to_max_tokens: int = field(
