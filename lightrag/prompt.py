@@ -17,7 +17,7 @@ Given a text document that is potentially relevant to this activity and a list o
 Use {language} as output language.
 
 ---Steps---
-1. Identify all entities. For each identified entity, extract the following information:
+1. Identify all entities(except for: ["申报要素"]). For each identified entity, extract the following information:
 - entity_name: Name of the entity, use same language as input text. If English, capitalized the name.
 - entity_type: One of the following types: [{entity_types}]
 - entity_description: Comprehensive description of the entity's attributes and activities
@@ -35,9 +35,11 @@ Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tupl
 3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
 Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
 
-4. Return output in {language} as a single list of all the entities and relationships identified in steps 1 and 2. Use **{record_delimiter}** as the list delimiter.
+4. 当 entity_name、entity_description、relationship_description 中包含“本章”“本节”“本税目”等指代内容时，必须严格按照上下文将其准确替换为确切名称（“第 X 章”“第 XX 节”“税目 XXXX”），且需对替换的准确性进行审核，以确保完全符合要求。
 
-5. When finished, output {completion_delimiter}
+5. Return output in {language} as a single list of all the entities and relationships identified in steps 1 and 2. Use **{record_delimiter}** as the list delimiter.
+
+6. When finished, output {completion_delimiter}
 
 ######################
 ---Examples---
