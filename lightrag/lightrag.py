@@ -238,7 +238,7 @@ class LightRAG:
     # Extensions
     # ---
 
-    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 2)))
+    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 16)))
     """Maximum number of parallel insert operations."""
 
     addon_params: dict[str, Any] = field(
