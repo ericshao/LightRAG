@@ -297,7 +297,7 @@ async def _merge_edges_then_upsert(
                 )
 
             # Get file_path with empty string default if missing or None
-            if already_edge.get("file_path") is not None:
+            if already_edge.get("metadata") is not None and "file_path" in already_edge["metadata"]:
                 already_file_paths.extend(
                     split_string_by_multi_markers(
                         already_edge["metadata"]["file_path"], [GRAPH_FIELD_SEP]
