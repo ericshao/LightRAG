@@ -16,20 +16,14 @@ import EmptyCard from '@/components/ui/EmptyCard'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 
-import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus } from '@/api/lightrag'
+import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus, DocStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
-import { DocStatusResponse } from '@/api/lightrag'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
-// // 定义排序方向类型
-// type SortDirection = 'asc' | 'desc' | null;
-// // 定义可排序列类型
-// type SortField = 'updated_at' | 'created_at' | 'content_length' | 'chunks_count';
-// 定义文档状态类型
 type StatusFilter = DocStatus | 'all';
 
 
@@ -148,10 +142,8 @@ export default function DocumentManager() {
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
-  // 添加排序状态
-  const [sortColumn, setSortColumn] = useState<SortField | null>(null);
-  // const [sortDirection, setSortDirection] = useState<SortDirection>(null);
-  // 添加过滤状态
+
+  // State for document status filter
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
   const currentTab = useSettingsStore.use.currentTab()
@@ -173,36 +165,6 @@ export default function DocumentManager() {
       setSortDirection('desc')
     }
   }
-
-  // Sort documents based on current sort field and direction
-  // const sortDocuments = (documents: DocStatusResponse[]) => {
-  //   return [...documents].sort((a, b) => {
-  //     let valueA, valueB;
-
-  //     // Special handling for ID field based on showFileName setting
-  //     if (sortField === 'id' && showFileName) {
-  //       valueA = getDisplayFileName(a);
-  //       valueB = getDisplayFileName(b);
-  //     } else if (sortField === 'id') {
-  //       valueA = a.id;
-  //       valueB = b.id;
-  //     } else {
-  //       // Date fields
-  //       valueA = new Date(a[sortField]).getTime();
-  //       valueB = new Date(b[sortField]).getTime();
-  //     }
-
-  //     // Apply sort direction
-  //     const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
-
-  //     // Compare values
-  //     if (typeof valueA === 'string' && typeof valueB === 'string') {
-  //       return sortMultiplier * valueA.localeCompare(valueB);
-  //     } else {
-  //       return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
-  //     }
-  //   });
-  // }
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -364,14 +326,12 @@ export default function DocumentManager() {
     return () => clearInterval(interval)
   }, [health, fetchDocuments, t, currentTab])
 
-  // 过滤和排序文档
+
   const filteredAndSortedDocs = useMemo(() => {
     if (!docs) return null;
 
-    // 创建一个过滤后的文档对象
     let filteredDocs = { ...docs };
 
-    // 应用状态过滤
     if (statusFilter !== 'all') {
       filteredDocs = {
         ...docs,
@@ -385,16 +345,14 @@ export default function DocumentManager() {
       };
     }
 
-    // 如果没有排序，直接返回过滤后的文档
-    if (!sortColumn || !sortDirection) return filteredDocs;
+    if (!sortField || !sortDirection) return filteredDocs;
 
-    // 应用排序
     const sortedStatuses = Object.entries(filteredDocs.statuses).reduce((acc, [status, documents]) => {
       const sortedDocuments = [...documents].sort((a, b) => {
         if (sortDirection === 'asc') {
-          return (a[sortColumn] ?? 0) > (b[sortColumn] ?? 0) ? 1 : -1;
+          return (a[sortField] ?? 0) > (b[sortField] ?? 0) ? 1 : -1;
         } else {
-          return (a[sortColumn] ?? 0) < (b[sortColumn] ?? 0) ? 1 : -1;
+          return (a[sortField] ?? 0) < (b[sortField] ?? 0) ? 1 : -1;
         }
       });
       acc[status as DocStatus] = sortedDocuments;
@@ -402,19 +360,9 @@ export default function DocumentManager() {
     }, {} as DocsStatusesResponse['statuses']);
 
     return { ...filteredDocs, statuses: sortedStatuses };
-  }, [docs, sortColumn, sortDirection, statusFilter]);
+  }, [docs, sortField, sortDirection, statusFilter]);
 
-  // 切换排序状态
-  const toggleSort = (column: SortField) => {
-    if (sortColumn === column) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortColumn(column);
-      setSortDirection('asc');
-    }
-  };
-
-  // 计算各状态文档数量
+  // Calculate document counts for each status
   const documentCounts = useMemo(() => {
     if (!docs) return { all: 0 } as Record<string, number>;
 
@@ -427,6 +375,7 @@ export default function DocumentManager() {
 
     return counts;
   }, [docs]);
+
   // Add dependency on sort state to re-render when sort changes
   useEffect(() => {
     // This effect ensures the component re-renders when sort state changes
@@ -449,50 +398,6 @@ export default function DocumentManager() {
             >
               <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
             </Button>
-            <div className="flex items-center gap-2 mb-4">
-              <FilterIcon className="h-4 w-4" />
-              <div className="flex gap-1">
-                <Button
-                  size="sm"
-                  variant={statusFilter === 'all' ? 'secondary' : 'outline'}
-                  onClick={() => setStatusFilter('all')}
-                >
-                  {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
-                  onClick={() => setStatusFilter('processed')}
-                  className="text-green-600"
-                >
-                  {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
-                  onClick={() => setStatusFilter('processing')}
-                  className="text-blue-600"
-                >
-                  {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
-                  onClick={() => setStatusFilter('pending')}
-                  className="text-yellow-600"
-                >
-                  {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
-                </Button>
-                <Button
-                  size="sm"
-                  variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
-                  onClick={() => setStatusFilter('failed')}
-                  className="text-red-600"
-                >
-                  {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
-                </Button>
-              </div>
-            </div>
             <Button
               variant="outline"
               onClick={() => setShowPipelineStatus(true)}
@@ -519,6 +424,50 @@ export default function DocumentManager() {
           <CardHeader className="flex-none py-2 px-4">
             <div className="flex justify-between items-center">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
+              <div className="flex items-center gap-2">
+                <FilterIcon className="h-4 w-4" />
+                <div className="flex gap-1">
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'all' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('all')}
+                  >
+                    {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('processed')}
+                    className={documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('processing')}
+                    className={documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('pending')}
+                    className={documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('failed')}
+                    className={documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
+                  </Button>
+                </div>
+              </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-500">{t('documentPanel.documentManager.fileNameLabel')}</span>
                 <Button
@@ -570,12 +519,12 @@ export default function DocumentManager() {
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
                         <TableHead
-                          onClick={() => toggleSort('created_at')}
+                          onClick={() => handleSort('created_at')}
                           className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.created')}
-                            {sortColumn === 'created_at' && (
+                            {sortField === 'created_at' && (
                               <span className="ml-1">
                                 {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                               </span>
@@ -583,12 +532,12 @@ export default function DocumentManager() {
                           </div>
                         </TableHead>
                         <TableHead
-                          onClick={() => toggleSort('updated_at')}
+                          onClick={() => handleSort('updated_at')}
                           className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.updated')}
-                            {sortColumn === 'updated_at' && (
+                            {sortField === 'updated_at' && (
                               <span className="ml-1">
                                 {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                               </span>
