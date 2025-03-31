@@ -5,7 +5,10 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-load_dotenv()
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 
 class TokenPayload(BaseModel):
@@ -20,9 +23,14 @@ class AuthHandler:
         self.secret = os.getenv("TOKEN_SECRET", "4f85ds4f56dsf46")
         self.algorithm = "HS256"
         self.expire_hours = int(os.getenv("TOKEN_EXPIRE_HOURS", 4))
-        self.guest_expire_hours = int(
-            os.getenv("GUEST_TOKEN_EXPIRE_HOURS", 2)
-        )  # Guest token default expiration time
+        self.guest_expire_hours = int(os.getenv("GUEST_TOKEN_EXPIRE_HOURS", 2))
+
+        self.accounts = {}
+        auth_accounts = os.getenv("AUTH_ACCOUNTS")
+        if auth_accounts:
+            for account in auth_accounts.split(","):
+                username, password = account.split(":", 1)
+                self.accounts[username] = password
 
     def create_token(
         self,

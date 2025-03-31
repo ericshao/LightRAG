@@ -38,8 +38,10 @@ from .prompt import GRAPH_FIELD_SEP, PROMPTS
 import time
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(override=True)
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 
 def chunking_by_token_size(
@@ -555,11 +557,11 @@ async def extract_entities(
         history = pack_user_ass_to_openai_messages(hint_prompt, inital_result)
 
         # Process initial extraction
-        # maybe_nodes, maybe_edges = await _process_extraction_result(
-        #     inital_result, chunk_key
-        # )
-        maybe_nodes = defaultdict(list)
-        maybe_edges = defaultdict(list)
+        maybe_nodes, maybe_edges = await _process_extraction_result(
+            inital_result, chunk_key
+        )
+        # maybe_nodes = defaultdict(list)
+        # maybe_edges = defaultdict(list)
 
         # Process additional gleaning results
         for now_glean_index in range(entity_extract_max_gleaning):
@@ -596,7 +598,7 @@ async def extract_entities(
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
-        log_message = f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (deduplicated)"
+        log_message = f"  Chk {processed_chunks}/{total_chunks}: extracted {entities_count} Ent + {relations_count} Rel (deduplicated)"
         logger.info(log_message)
         if pipeline_status is not None:
             async with pipeline_status_lock:
@@ -681,7 +683,7 @@ async def extract_entities(
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    log_message = f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (deduplicated)"
+    log_message = f"Extracted {len(all_entities_data)} entities + {len(all_relationships_data)} relationships (deduplicated)"
     logger.info(log_message)
     if pipeline_status is not None:
         async with pipeline_status_lock:
@@ -732,7 +734,11 @@ async def kg_query(
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -893,7 +899,9 @@ async def extract_keywords_only(
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     # 5. Call the LLM for keyword extraction
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        param.model_func if param.model_func else global_config["llm_model_func"]
+    )
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
     # 6. Parse out JSON from the LLM response
@@ -953,7 +961,11 @@ async def mix_kg_vector_query(
     3. Combining both results for comprehensive answer generation
     """
     # 1. Cache handling
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash("mix", query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, "mix", cache_type="query"
@@ -1055,7 +1067,7 @@ async def mix_kg_vector_query(
             # Include time information in content
             formatted_chunks = []
             for c in maybe_trun_chunks:
-                chunk_text = c["content"]
+                chunk_text = "File path: " + c["file_path"] + "\n" + c["content"]
                 if c["created_at"]:
                     chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
@@ -1351,10 +1363,9 @@ async def _get_node_data(
         )
     relations_context = list_of_list_to_csv(relations_section_list)
 
-    text_units_section_list = [["id", "content", "doc_id"]]
+    text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        doc_id = t.get("full_doc_id", "Unknown")
-        text_units_section_list.append([i, t["content"], doc_id])
+        text_units_section_list.append([i, t["content"], t["file_path"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1615,10 +1626,9 @@ async def _get_edge_data(
         )
     entities_context = list_of_list_to_csv(entites_section_list)
 
-    text_units_section_list = [["id", "content", "doc_id"]]
+    text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        doc_id = t.get("full_doc_id", "Unknown")
-        text_units_section_list.append([i, t["content"], doc_id])
+        text_units_section_list.append([i, t["content"], t["file_path"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1760,7 +1770,11 @@ async def naive_query(
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -1800,7 +1814,12 @@ async def naive_query(
         f"Truncate chunks from {len(chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
-    section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
+    section = "\n--New Chunk--\n".join(
+        [
+            "File path: " + c["file_path"] + "\n" + c["content"]
+            for c in maybe_trun_chunks
+        ]
+    )
 
     if query_param.only_need_context:
         return section
@@ -1879,7 +1898,11 @@ async def kg_query_with_keywords(
     # ---------------------------
     # 1) Handle potential cache for query results
     # ---------------------------
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
