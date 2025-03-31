@@ -236,7 +236,7 @@ def create_dify_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRoute
                         return DifyResponse(records=[])
 
                     records = []
-                    
+
                     # 处理knowledge graph结果
                     if kg_context := result.get("kg_context"):
                         logger.debug(f"Found kg_context")
