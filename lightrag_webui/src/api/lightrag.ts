@@ -41,6 +41,11 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
   }
+  update_status?: Record<string, any>
+  core_version?: string
+  api_version?: string
+  auth_mode?: 'enabled' | 'disabled'
+  pipeline_busy: boolean
 }
 
 export type LightragDocumentsScanProgress = {
@@ -104,7 +109,7 @@ export type QueryResponse = {
 }
 
 export type DocActionResponse = {
-  status: 'success' | 'partial_success' | 'failure'
+  status: 'success' | 'partial_success' | 'failure' | 'duplicated'
   message: string
 }
 
@@ -120,6 +125,7 @@ export type DocStatusResponse = {
   chunks_count?: number
   error?: string
   metadata?: Record<string, any>
+  file_path: string
 }
 
 export type DocsStatusesResponse = {
@@ -132,6 +138,22 @@ export type AuthStatusResponse = {
   token_type?: string
   auth_mode?: 'enabled' | 'disabled'
   message?: string
+  core_version?: string
+  api_version?: string
+}
+
+export type PipelineStatusResponse = {
+  autoscanned: boolean
+  busy: boolean
+  job_name: string
+  job_start?: string
+  docs: number
+  batchs: number
+  cur_batch: number
+  request_pending: boolean
+  latest_message: string
+  history_messages?: string[]
+  update_status?: Record<string, any>
 }
 
 export type LoginResponse = {
@@ -139,6 +161,8 @@ export type LoginResponse = {
   token_type: string
   auth_mode?: 'enabled' | 'disabled'  // Authentication mode identifier
   message?: string                    // Optional message
+  core_version?: string
+  api_version?: string
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -179,8 +203,9 @@ axiosInstance.interceptors.response.use(
         }
         // For other APIs, navigate to login page
         navigationService.navigateToLogin();
-        // Return a never-resolving promise to prevent further execution
-        return new Promise(() => {});
+
+        // return a reject Promise
+        return Promise.reject(new Error('Authentication required'));
       }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
@@ -412,6 +437,11 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       auth_mode: 'enabled'
     };
   }
+}
+
+export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
+  const response = await axiosInstance.get('/documents/pipeline_status')
+  return response.data
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {

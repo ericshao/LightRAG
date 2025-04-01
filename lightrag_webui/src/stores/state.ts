@@ -6,21 +6,26 @@ interface BackendState {
   health: boolean
   message: string | null
   messageTitle: string | null
-
   status: LightragStatus | null
-
   lastCheckTime: number
+  pipelineBusy: boolean
 
   check: () => Promise<boolean>
   clear: () => void
   setErrorMessage: (message: string, messageTitle: string) => void
+  setPipelineBusy: (busy: boolean) => void
 }
 
 interface AuthState {
   isAuthenticated: boolean;
   isGuestMode: boolean;  // Add guest mode flag
-  login: (token: string, isGuest?: boolean) => void;
+  coreVersion: string | null;
+  apiVersion: string | null;
+  username: string | null; // login username
+
+  login: (token: string, isGuest?: boolean, coreVersion?: string | null, apiVersion?: string | null) => void;
   logout: () => void;
+  setVersion: (coreVersion: string | null, apiVersion: string | null) => void;
 }
 
 const useBackendStateStoreBase = create<BackendState>()((set) => ({
@@ -29,16 +34,26 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
   messageTitle: null,
   lastCheckTime: Date.now(),
   status: null,
+  pipelineBusy: false,
 
   check: async () => {
     const health = await checkHealth()
     if (health.status === 'healthy') {
+      // Update version information if health check returns it
+      if (health.core_version || health.api_version) {
+        useAuthStore.getState().setVersion(
+          health.core_version || null,
+          health.api_version || null
+        );
+      }
+
       set({
         health: true,
         message: null,
         messageTitle: null,
         lastCheckTime: Date.now(),
-        status: health
+        status: health,
+        pipelineBusy: health.pipeline_busy
       })
       return true
     }
@@ -58,6 +73,10 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
 
   setErrorMessage: (message: string, messageTitle: string) => {
     set({ health: false, message, messageTitle })
+  },
+
+  setPipelineBusy: (busy: boolean) => {
+    set({ pipelineBusy: busy })
   }
 }))
 
@@ -65,34 +84,51 @@ const useBackendState = createSelectors(useBackendStateStoreBase)
 
 export { useBackendState }
 
-// Helper function to check if token is a guest token
-const isGuestToken = (token: string): boolean => {
+const parseTokenPayload = (token: string): { sub?: string; role?: string } => {
   try {
     // JWT tokens are in the format: header.payload.signature
     const parts = token.split('.');
-    if (parts.length !== 3) return false;
-
-    // Decode the payload (second part)
+    if (parts.length !== 3) return {};
     const payload = JSON.parse(atob(parts[1]));
-
-    // Check if the token has a role field with value "guest"
-    return payload.role === 'guest';
+    return payload;
   } catch (e) {
-    console.error('Error parsing token:', e);
-    return false;
+    console.error('Error parsing token payload:', e);
+    return {};
   }
 };
 
-// Initialize auth state from localStorage
-const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean } => {
+const getUsernameFromToken = (token: string): string | null => {
+  const payload = parseTokenPayload(token);
+  return payload.sub || null;
+};
+
+const isGuestToken = (token: string): boolean => {
+  const payload = parseTokenPayload(token);
+  return payload.role === 'guest';
+};
+
+const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null } => {
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
+  const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
+  const username = token ? getUsernameFromToken(token) : null;
+
   if (!token) {
-    return { isAuthenticated: false, isGuestMode: false };
+    return {
+      isAuthenticated: false,
+      isGuestMode: false,
+      coreVersion: coreVersion,
+      apiVersion: apiVersion,
+      username: null,
+    };
   }
 
   return {
     isAuthenticated: true,
-    isGuestMode: isGuestToken(token)
+    isGuestMode: isGuestToken(token),
+    coreVersion: coreVersion,
+    apiVersion: apiVersion,
+    username: username,
   };
 };
 
@@ -103,20 +139,58 @@ export const useAuthStore = create<AuthState>(set => {
   return {
     isAuthenticated: initialState.isAuthenticated,
     isGuestMode: initialState.isGuestMode,
+    coreVersion: initialState.coreVersion,
+    apiVersion: initialState.apiVersion,
+    username: initialState.username,
 
-    login: (token, isGuest = false) => {
+    login: (token, isGuest = false, coreVersion = null, apiVersion = null) => {
       localStorage.setItem('LIGHTRAG-API-TOKEN', token);
+
+      if (coreVersion) {
+        localStorage.setItem('LIGHTRAG-CORE-VERSION', coreVersion);
+      }
+      if (apiVersion) {
+        localStorage.setItem('LIGHTRAG-API-VERSION', apiVersion);
+      }
+
+      const username = getUsernameFromToken(token);
       set({
         isAuthenticated: true,
-        isGuestMode: isGuest
+        isGuestMode: isGuest,
+        username: username,
+        coreVersion: coreVersion,
+        apiVersion: apiVersion,
       });
     },
 
     logout: () => {
       localStorage.removeItem('LIGHTRAG-API-TOKEN');
+
+      const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
+      const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
+
       set({
         isAuthenticated: false,
-        isGuestMode: false
+        isGuestMode: false,
+        username: null,
+        coreVersion: coreVersion,
+        apiVersion: apiVersion,
+      });
+    },
+
+    setVersion: (coreVersion, apiVersion) => {
+      // Update localStorage
+      if (coreVersion) {
+        localStorage.setItem('LIGHTRAG-CORE-VERSION', coreVersion);
+      }
+      if (apiVersion) {
+        localStorage.setItem('LIGHTRAG-API-VERSION', apiVersion);
+      }
+
+      // Update state
+      set({
+        coreVersion: coreVersion,
+        apiVersion: apiVersion
       });
     }
   };

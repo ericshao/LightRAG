@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
+import { cn } from '@/lib/utils'
 import {
   Table,
   TableBody,
@@ -12,41 +13,269 @@ import {
 } from '@/components/ui/Table'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
 import EmptyCard from '@/components/ui/EmptyCard'
-import Text from '@/components/ui/Text'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 
-import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus } from '@/api/lightrag'
+import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus, DocStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ChevronUpIcon, ChevronDownIcon, FilterIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
+import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
-// 定义排序方向类型
-type SortDirection = 'asc' | 'desc' | null;
-// 定义可排序列类型
-type SortableColumn = 'updated_at' | 'created_at' | 'content_length' | 'chunks_count';
-// 定义文档状态类型
 type StatusFilter = DocStatus | 'all';
 
+
+const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
+  // Check if file_path exists and is a non-empty string
+  if (!doc.file_path || typeof doc.file_path !== 'string' || doc.file_path.trim() === '') {
+    return doc.id;
+  }
+
+  // Try to extract filename from path
+  const parts = doc.file_path.split('/');
+  const fileName = parts[parts.length - 1];
+
+  // Ensure extracted filename is valid
+  if (!fileName || fileName.trim() === '') {
+    return doc.id;
+  }
+
+  // If filename is longer than maxLength, truncate it and add ellipsis
+  return fileName.length > maxLength
+    ? fileName.slice(0, maxLength) + '...'
+    : fileName;
+};
+
+const pulseStyle = `
+/* Tooltip styles */
+.tooltip-container {
+  position: relative;
+  overflow: visible !important;
+}
+
+.tooltip {
+  position: fixed; /* Use fixed positioning to escape overflow constraints */
+  z-index: 9999; /* Ensure tooltip appears above all other elements */
+  max-width: 600px;
+  white-space: normal;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  background-color: rgba(0, 0, 0, 0.95);
+  color: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  pointer-events: none; /* Prevent tooltip from interfering with mouse events */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s, visibility 0.15s;
+}
+
+.tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.dark .tooltip {
+  background-color: rgba(255, 255, 255, 0.95);
+  color: black;
+}
+
+/* Position tooltip helper class */
+.tooltip-helper {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 0;
+}
+
+@keyframes pulse {
+  0% {
+    background-color: rgb(255 0 0 / 0.1);
+    border-color: rgb(255 0 0 / 0.2);
+  }
+  50% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+  100% {
+    background-color: rgb(255 0 0 / 0.1);
+    border-color: rgb(255 0 0 / 0.2);
+  }
+}
+
+.dark .pipeline-busy {
+  animation: dark-pulse 2s infinite;
+}
+
+@keyframes dark-pulse {
+  0% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+  50% {
+    background-color: rgb(255 0 0 / 0.3);
+    border-color: rgb(255 0 0 / 0.6);
+  }
+  100% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+}
+
+.pipeline-busy {
+  animation: pulse 2s infinite;
+  border: 1px solid;
+}
+`;
+
+// Type definitions for sort field and direction
+type SortField = 'created_at' | 'updated_at' | 'id';
+type SortDirection = 'asc' | 'desc';
+
 export default function DocumentManager() {
+  const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
   const health = useBackendState.use.health()
+  const pipelineBusy = useBackendState.use.pipelineBusy()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
-  // 添加排序状态
-  const [sortColumn, setSortColumn] = useState<SortableColumn | null>(null);
-  const [sortDirection, setSortDirection] = useState<SortDirection>(null);
-  // 添加过滤状态
+
+  // State for document status filter
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
   const currentTab = useSettingsStore.use.currentTab()
+  const showFileName = useSettingsStore.use.showFileName()
+  const setShowFileName = useSettingsStore.use.setShowFileName()
+
+  // Sort state
+  const [sortField, setSortField] = useState<SortField>('updated_at')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+
+  // Handle sort column click
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      // Toggle sort direction if clicking the same field
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      // Set new sort field with default desc direction
+      setSortField(field)
+      setSortDirection('desc')
+    }
+  }
+
+  // Store previous status counts
+  const prevStatusCounts = useRef({
+    processed: 0,
+    processing: 0,
+    pending: 0,
+    failed: 0
+  })
+
+  // Add pulse style to document
+  useEffect(() => {
+    const style = document.createElement('style')
+    style.textContent = pulseStyle
+    document.head.appendChild(style)
+    return () => {
+      document.head.removeChild(style)
+    }
+  }, [])
+
+  // Reference to the card content element
+  const cardContentRef = useRef<HTMLDivElement>(null);
+
+  // Add tooltip position adjustment for fixed positioning
+  useEffect(() => {
+    if (!docs) return;
+
+    // Function to position tooltips
+    const positionTooltips = () => {
+      // Get all tooltip containers
+      const containers = document.querySelectorAll<HTMLElement>('.tooltip-container');
+
+      containers.forEach(container => {
+        const tooltip = container.querySelector<HTMLElement>('.tooltip');
+        if (!tooltip) return;
+
+        // Skip tooltips that aren't visible
+        if (!tooltip.classList.contains('visible')) return;
+
+        // Get container position
+        const rect = container.getBoundingClientRect();
+
+        // Position tooltip above the container
+        tooltip.style.left = `${rect.left}px`;
+        tooltip.style.top = `${rect.top - 5}px`;
+        tooltip.style.transform = 'translateY(-100%)';
+      });
+    };
+
+    // Set up event listeners
+    const handleMouseOver = (e: MouseEvent) => {
+      // Check if target or its parent is a tooltip container
+      const target = e.target as HTMLElement;
+      const container = target.closest('.tooltip-container');
+      if (!container) return;
+
+      // Find tooltip and make it visible
+      const tooltip = container.querySelector<HTMLElement>('.tooltip');
+      if (tooltip) {
+        tooltip.classList.add('visible');
+        // Position immediately without delay
+        positionTooltips();
+      }
+    };
+
+    const handleMouseOut = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const container = target.closest('.tooltip-container');
+      if (!container) return;
+
+      const tooltip = container.querySelector<HTMLElement>('.tooltip');
+      if (tooltip) {
+        tooltip.classList.remove('visible');
+      }
+    };
+
+    document.addEventListener('mouseover', handleMouseOver);
+    document.addEventListener('mouseout', handleMouseOut);
+
+    return () => {
+      document.removeEventListener('mouseover', handleMouseOver);
+      document.removeEventListener('mouseout', handleMouseOut);
+    };
+  }, [docs]);
 
   const fetchDocuments = useCallback(async () => {
     try {
       const docs = await getDocuments()
+
+      // Get new status counts (treat null as all zeros)
+      const newStatusCounts = {
+        processed: docs?.statuses?.processed?.length || 0,
+        processing: docs?.statuses?.processing?.length || 0,
+        pending: docs?.statuses?.pending?.length || 0,
+        failed: docs?.statuses?.failed?.length || 0
+      }
+
+      // Check if any status count has changed
+      const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
+        status => newStatusCounts[status] !== prevStatusCounts.current[status]
+      )
+
+      // Trigger health check if changes detected
+      if (hasStatusCountChange) {
+        useBackendState.getState().check()
+      }
+
+      // Update previous status counts
+      prevStatusCounts.current = newStatusCounts
+
+      // Update docs state
       if (docs && docs.statuses) {
-        // compose all documents count
         const numDocuments = Object.values(docs.statuses).reduce(
           (acc, status) => acc + status.length,
           0
@@ -97,14 +326,12 @@ export default function DocumentManager() {
     return () => clearInterval(interval)
   }, [health, fetchDocuments, t, currentTab])
 
-  // 过滤和排序文档
+
   const filteredAndSortedDocs = useMemo(() => {
     if (!docs) return null;
 
-    // 创建一个过滤后的文档对象
     let filteredDocs = { ...docs };
 
-    // 应用状态过滤
     if (statusFilter !== 'all') {
       filteredDocs = {
         ...docs,
@@ -118,16 +345,14 @@ export default function DocumentManager() {
       };
     }
 
-    // 如果没有排序，直接返回过滤后的文档
-    if (!sortColumn || !sortDirection) return filteredDocs;
+    if (!sortField || !sortDirection) return filteredDocs;
 
-    // 应用排序
     const sortedStatuses = Object.entries(filteredDocs.statuses).reduce((acc, [status, documents]) => {
       const sortedDocuments = [...documents].sort((a, b) => {
         if (sortDirection === 'asc') {
-          return (a[sortColumn] ?? 0) > (b[sortColumn] ?? 0) ? 1 : -1;
+          return (a[sortField] ?? 0) > (b[sortField] ?? 0) ? 1 : -1;
         } else {
-          return (a[sortColumn] ?? 0) < (b[sortColumn] ?? 0) ? 1 : -1;
+          return (a[sortField] ?? 0) < (b[sortField] ?? 0) ? 1 : -1;
         }
       });
       acc[status as DocStatus] = sortedDocuments;
@@ -135,19 +360,9 @@ export default function DocumentManager() {
     }, {} as DocsStatusesResponse['statuses']);
 
     return { ...filteredDocs, statuses: sortedStatuses };
-  }, [docs, sortColumn, sortDirection, statusFilter]);
+  }, [docs, sortField, sortDirection, statusFilter]);
 
-  // 切换排序状态
-  const toggleSort = (column: SortableColumn) => {
-    if (sortColumn === column) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortColumn(column);
-      setSortDirection('asc');
-    }
-  };
-
-  // 计算各状态文档数量
+  // Calculate document counts for each status
   const documentCounts = useMemo(() => {
     if (!docs) return { all: 0 } as Record<string, number>;
 
@@ -161,150 +376,244 @@ export default function DocumentManager() {
     return counts;
   }, [docs]);
 
+  // Add dependency on sort state to re-render when sort changes
+  useEffect(() => {
+    // This effect ensures the component re-renders when sort state changes
+  }, [sortField, sortDirection]);
+
   return (
-    <Card className="!size-full !rounded-none !border-none">
-      <CardHeader>
+    <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
+      <CardHeader className="py-2 px-6">
         <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={scanDocuments}
-            side="bottom"
-            tooltip={t('documentPanel.documentManager.scanTooltip')}
-            size="sm"
-          >
-            <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
-          </Button>
-          <div className="flex items-center gap-2 mb-4">
-            <FilterIcon className="h-4 w-4" />
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant={statusFilter === 'all' ? 'secondary' : 'outline'}
-                onClick={() => setStatusFilter('all')}
-              >
-                {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
-              </Button>
-              <Button
-                size="sm"
-                variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
-                onClick={() => setStatusFilter('processed')}
-                className="text-green-600"
-              >
-                {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
-              </Button>
-              <Button
-                size="sm"
-                variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
-                onClick={() => setStatusFilter('processing')}
-                className="text-blue-600"
-              >
-                {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
-              </Button>
-              <Button
-                size="sm"
-                variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
-                onClick={() => setStatusFilter('pending')}
-                className="text-yellow-600"
-              >
-                {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
-              </Button>
-              <Button
-                size="sm"
-                variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
-                onClick={() => setStatusFilter('failed')}
-                className="text-red-600"
-              >
-                {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
-              </Button>
-            </div>
+      <CardContent className="flex-1 flex flex-col min-h-0 overflow-auto">
+        <div className="flex gap-2 mb-2">
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={scanDocuments}
+              side="bottom"
+              tooltip={t('documentPanel.documentManager.scanTooltip')}
+              size="sm"
+            >
+              <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowPipelineStatus(true)}
+              side="bottom"
+              tooltip={t('documentPanel.documentManager.pipelineStatusTooltip')}
+              size="sm"
+              className={cn(
+                pipelineBusy && 'pipeline-busy'
+              )}
+            >
+              <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
+            </Button>
           </div>
           <div className="flex-1" />
           <ClearDocumentsDialog />
           <UploadDocumentsDialog />
+          <PipelineStatusDialog
+            open={showPipelineStatus}
+            onOpenChange={setShowPipelineStatus}
+          />
         </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
-            <CardDescription>{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
+        <Card className="flex-1 flex flex-col border rounded-md min-h-0 mb-2">
+          <CardHeader className="flex-none py-2 px-4">
+            <div className="flex justify-between items-center">
+              <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
+              <div className="flex items-center gap-2">
+                <FilterIcon className="h-4 w-4" />
+                <div className="flex gap-1">
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'all' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('all')}
+                  >
+                    {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('processed')}
+                    className={documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('processing')}
+                    className={documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('pending')}
+                    className={documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('failed')}
+                    className={documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
+                  </Button>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-500">{t('documentPanel.documentManager.fileNameLabel')}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowFileName(!showFileName)}
+                  className="border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  {showFileName
+                    ? t('documentPanel.documentManager.hideButton')
+                    : t('documentPanel.documentManager.showButton')
+                  }
+                </Button>
+              </div>
+            </div>
+            <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
-          <CardContent>
+
+          <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
             {!docs && (
-              <EmptyCard
-                title={t('documentPanel.documentManager.emptyTitle')}
-                description={t('documentPanel.documentManager.emptyDescription')}
-              />
+              <div className="absolute inset-0 p-0">
+                <EmptyCard
+                  title={t('documentPanel.documentManager.emptyTitle')}
+                  description={t('documentPanel.documentManager.emptyDescription')}
+                />
+              </div>
             )}
             {docs && (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                    <TableHead onClick={() => toggleSort('created_at')} className="cursor-pointer hover:bg-background/60">
-                      {t('documentPanel.documentManager.columns.created')}
-                      {sortColumn === 'created_at' && (
-                        sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
-                      )}
-                    </TableHead>
-                    <TableHead onClick={() => toggleSort('updated_at')} className="cursor-pointer hover:bg-background/60">
-                      {t('documentPanel.documentManager.columns.updated')}
-                      {sortColumn === 'updated_at' && (
-                        sortDirection === 'asc' ? <ChevronUpIcon className="inline ml-1" /> : <ChevronDownIcon className="inline ml-1" />
-                      )}
-                    </TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.metadata')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody className="text-sm">
-                  {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).map(([status, documents]) =>
-                    documents.map((doc) => (
-                      <TableRow key={doc.id}>
-                        <TableCell className="truncate font-mono">{doc.id}</TableCell>
-                        <TableCell className="max-w-xs min-w-24 truncate">
-                          <Text
-                            text={doc.content_summary}
-                            tooltip={doc.content_summary}
-                            tooltipClassName="max-w-none overflow-visible block"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          {status === 'processed' && (
-                            <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
-                          )}
-                          {status === 'processing' && (
-                            <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
-                          )}
-                          {status === 'pending' && <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>}
-                          {status === 'failed' && <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>}
-                          {doc.error && (
-                            <span className="ml-2 text-red-500" title={doc.error}>
-                              ⚠️
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell>{doc.content_length ?? '-'}</TableCell>
-                        <TableCell>{doc.chunks_count ?? '-'}</TableCell>
-                        <TableCell className="truncate">
-                          {new Date(doc.created_at).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="truncate">
-                          {new Date(doc.updated_at).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="max-w-xs truncate">
-                          {doc.metadata ? JSON.stringify(doc.metadata) : '-'}
-                        </TableCell>
+              <div className="absolute inset-0 flex flex-col p-0">
+                <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
+                  <Table className="w-full">
+                    <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                      <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
+                        <TableHead
+                          onClick={() => handleSort('id')}
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.id')}
+                            {sortField === 'id' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
+                        <TableHead
+                          onClick={() => handleSort('created_at')}
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.created')}
+                            {sortField === 'created_at' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
+                        <TableHead
+                          onClick={() => handleSort('updated_at')}
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.updated')}
+                            {sortField === 'updated_at' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
                       </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
+                    </TableHeader>
+                    <TableBody className="text-sm overflow-auto">
+                      {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).map(([status, documents]) =>
+                        documents.map((doc) => (
+                          <TableRow key={doc.id}>
+                            <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
+                              {showFileName ? (
+                                <>
+                                  <div className="group relative overflow-visible tooltip-container">
+                                    <div className="truncate">
+                                      {getDisplayFileName(doc, 30)}
+                                    </div>
+                                    <div className="invisible group-hover:visible tooltip">
+                                      {doc.file_path}
+                                    </div>
+                                  </div>
+                                  <div className="text-xs text-gray-500">{doc.id}</div>
+                                </>
+                              ) : (
+                                <div className="group relative overflow-visible tooltip-container">
+                                  <div className="truncate">
+                                    {doc.id}
+                                  </div>
+                                  <div className="invisible group-hover:visible tooltip">
+                                    {doc.file_path}
+                                  </div>
+                                </div>
+                              )}
+                            </TableCell>
+                            <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
+                              <div className="group relative overflow-visible tooltip-container">
+                                <div className="truncate">
+                                  {doc.content_summary}
+                                </div>
+                                <div className="invisible group-hover:visible tooltip">
+                                  {doc.content_summary}
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              {status === 'processed' && (
+                                <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
+                              )}
+                              {status === 'processing' && (
+                                <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
+                              )}
+                              {status === 'pending' && <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>}
+                              {status === 'failed' && <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>}
+                              {doc.error && (
+                                <span className="ml-2 text-red-500" title={doc.error}>
+                                  ⚠️
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell>{doc.content_length ?? '-'}</TableCell>
+                            <TableCell>{doc.chunks_count ?? '-'}</TableCell>
+                            <TableCell className="truncate">
+                              {new Date(doc.created_at).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="truncate">
+                              {new Date(doc.updated_at).toLocaleString()}
+                            </TableCell>
+                          </TableRow>
+                        )))
+                      }
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>

@@ -55,8 +55,10 @@ from .utils import (
 from .types import KnowledgeGraph
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(override=True)
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
@@ -183,10 +185,12 @@ class LightRAG:
     embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
 
-    embedding_batch_num: int = field(default=32)
+    embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 32)))
     """Batch size for embedding computations."""
 
-    embedding_func_max_async: int = field(default=16)
+    embedding_func_max_async: int = field(
+        default=int(os.getenv("EMBEDDING_FUNC_MAX_ASYNC", 16))
+    )
     """Maximum number of concurrent embedding function calls."""
 
     embedding_cache_config: dict[str, Any] = field(
@@ -843,7 +847,7 @@ class LightRAG:
                 pipeline_status.update(
                     {
                         "busy": True,
-                        "job_name": "indexing files",
+                        "job_name": "Default Job",
                         "job_start": datetime.now().isoformat(),
                         "docs": 0,
                         "batchs": 0,
@@ -882,10 +886,20 @@ class LightRAG:
                 logger.info(log_message)
 
                 # Update pipeline status with current batch information
-                pipeline_status["docs"] += len(to_process_docs)
-                pipeline_status["batchs"] += len(docs_batches)
+                pipeline_status["docs"] = len(to_process_docs)
+                pipeline_status["batchs"] = len(docs_batches)
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
+
+                # Get first document's file path and total count for job name
+                first_doc_id, first_doc = next(iter(to_process_docs.items()))
+                first_doc_path = first_doc.file_path
+                path_prefix = first_doc_path[:20] + (
+                    "..." if len(first_doc_path) > 20 else ""
+                )
+                total_files = len(to_process_docs)
+                job_name = f"{path_prefix}[{total_files} files]"
+                pipeline_status["job_name"] = job_name
 
                 async def process_document(
                     doc_id: str,
@@ -1328,11 +1342,15 @@ class LightRAG:
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
+                If param.model_func is provided, it will be used instead of the global model.
             prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
             str: The result of the query execution.
         """
+        # If a custom model is provided in param, temporarily update global config
+        global_config = asdict(self)
+
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
                 query.strip(),
@@ -1341,7 +1359,7 @@ class LightRAG:
                 self.relationships_vdb,
                 self.text_chunks,
                 param,
-                asdict(self),
+                global_config,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
@@ -1351,7 +1369,7 @@ class LightRAG:
                 self.chunks_vdb,
                 self.text_chunks,
                 param,
-                asdict(self),
+                global_config,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
@@ -1364,7 +1382,7 @@ class LightRAG:
                 self.chunks_vdb,
                 self.text_chunks,
                 param,
-                asdict(self),
+                global_config,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
@@ -2021,6 +2039,8 @@ class LightRAG:
 
             # 2. Update entity information in the graph
             new_node_data = {**node_data, **updated_data}
+            new_node_data["entity_id"] = new_entity_name
+
             if "entity_name" in new_node_data:
                 del new_node_data[
                     "entity_name"
@@ -2037,7 +2057,7 @@ class LightRAG:
 
                 # Store relationships that need to be updated
                 relations_to_update = []
-
+                relations_to_delete = []
                 # Get all edges related to the original entity
                 edges = await self.chunk_entity_relation_graph.get_node_edges(
                     entity_name
@@ -2049,6 +2069,12 @@ class LightRAG:
                             source, target
                         )
                         if edge_data:
+                            relations_to_delete.append(
+                                compute_mdhash_id(source + target, prefix="rel-")
+                            )
+                            relations_to_delete.append(
+                                compute_mdhash_id(target + source, prefix="rel-")
+                            )
                             if source == entity_name:
                                 await self.chunk_entity_relation_graph.upsert_edge(
                                     new_entity_name, target, edge_data
@@ -2072,6 +2098,12 @@ class LightRAG:
                 await self.entities_vdb.delete([old_entity_id])
                 logger.info(
                     f"Deleted old entity '{entity_name}' and its vector embedding from database"
+                )
+
+                # Delete old relation records from vector database
+                await self.relationships_vdb.delete(relations_to_delete)
+                logger.info(
+                    f"Deleted {len(relations_to_delete)} relation records for entity '{entity_name}' from vector database"
                 )
 
                 # Update relationship vector representations
@@ -2572,39 +2604,21 @@ class LightRAG:
             # 4. Get all relationships of the source entities
             all_relations = []
             for entity_name in source_entities:
-                # Get all relationships where this entity is the source
-                outgoing_edges = await self.chunk_entity_relation_graph.get_node_edges(
+                # Get all relationships of the source entities
+                edges = await self.chunk_entity_relation_graph.get_node_edges(
                     entity_name
                 )
-                if outgoing_edges:
-                    for src, tgt in outgoing_edges:
+                if edges:
+                    for src, tgt in edges:
                         # Ensure src is the current entity
                         if src == entity_name:
                             edge_data = await self.chunk_entity_relation_graph.get_edge(
                                 src, tgt
                             )
-                            all_relations.append(("outgoing", src, tgt, edge_data))
-
-                # Get all relationships where this entity is the target
-                incoming_edges = []
-                all_labels = await self.chunk_entity_relation_graph.get_all_labels()
-                for label in all_labels:
-                    if label == entity_name:
-                        continue
-                    node_edges = await self.chunk_entity_relation_graph.get_node_edges(
-                        label
-                    )
-                    for src, tgt in node_edges or []:
-                        if tgt == entity_name:
-                            incoming_edges.append((src, tgt))
-
-                for src, tgt in incoming_edges:
-                    edge_data = await self.chunk_entity_relation_graph.get_edge(
-                        src, tgt
-                    )
-                    all_relations.append(("incoming", src, tgt, edge_data))
+                            all_relations.append((src, tgt, edge_data))
 
             # 5. Create or update the target entity
+            merged_entity_data["entity_id"] = target_entity
             if not target_exists:
                 await self.chunk_entity_relation_graph.upsert_node(
                     target_entity, merged_entity_data
@@ -2618,8 +2632,11 @@ class LightRAG:
 
             # 6. Recreate all relationships, pointing to the target entity
             relation_updates = {}  # Track relationships that need to be merged
+            relations_to_delete = []
 
-            for rel_type, src, tgt, edge_data in all_relations:
+            for src, tgt, edge_data in all_relations:
+                relations_to_delete.append(compute_mdhash_id(src + tgt, prefix="rel-"))
+                relations_to_delete.append(compute_mdhash_id(tgt + src, prefix="rel-"))
                 new_src = target_entity if src in source_entities else src
                 new_tgt = target_entity if tgt in source_entities else tgt
 
@@ -2662,6 +2679,12 @@ class LightRAG:
                 )
                 logger.info(
                     f"Created or updated relationship: {rel_data['src']} -> {rel_data['tgt']}"
+                )
+
+                # Delete relationships records from vector database
+                await self.relationships_vdb.delete(relations_to_delete)
+                logger.info(
+                    f"Deleted {len(relations_to_delete)} relation records for entity '{entity_name}' from vector database"
                 )
 
             # 7. Update entity vector representation
@@ -2725,19 +2748,6 @@ class LightRAG:
                 # Delete entity record from vector database
                 entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([entity_id])
-
-                # Also ensure any relationships specific to this entity are deleted from vector DB
-                # This is a safety check, as these should have been transformed to the target entity already
-                entity_relation_prefix = compute_mdhash_id(entity_name, prefix="rel-")
-                relations_with_entity = await self.relationships_vdb.search_by_prefix(
-                    entity_relation_prefix
-                )
-                if relations_with_entity:
-                    relation_ids = [r["id"] for r in relations_with_entity]
-                    await self.relationships_vdb.delete(relation_ids)
-                    logger.info(
-                        f"Deleted {len(relation_ids)} relation records for entity '{entity_name}' from vector database"
-                    )
 
                 logger.info(
                     f"Deleted source entity '{entity_name}' and its vector embedding from database"

@@ -10,12 +10,16 @@ from typing import (
     Literal,
     TypedDict,
     TypeVar,
+    Callable,
 )
 import numpy as np
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 
-load_dotenv()
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 
 class TextChunkSchema(TypedDict):
@@ -83,6 +87,12 @@ class QueryParam:
 
     ids: list[str] | None = None
     """List of ids to filter the results."""
+
+    model_func: Callable[..., object] | None = None
+    """Optional override for the LLM model function to use for this specific query.
+    If provided, this will be used instead of the global model function.
+    This allows using different models for different query modes.
+    """
 
 
 @dataclass
