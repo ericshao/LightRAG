@@ -53,8 +53,8 @@ const defaultSigmaSettings: Partial<SigmaSettings> = {
     attribute: 'labelColor'
   },
   edgeLabelSize: 8,
-  labelSize: 12
-  // minEdgeThickness: 2
+  labelSize: 12,
+  minEdgeThickness: 4
   // labelFont: 'Lato, sans-serif'
 }
 
@@ -69,6 +69,11 @@ const GraphEvents = () => {
       downNode: (e) => {
         setDraggedNode(e.node)
         sigma.getGraph().setNodeAttribute(e.node, 'highlighted', true)
+      },
+      // 修改边点击事件处理，添加第二个参数 true
+      enterEdge: (e) => {
+        // useGraphStore.getState().setSelectedEdge(e.edge, true)
+        sigma.getGraph().setEdgeAttribute(e.edge, 'thickness', 8)
       },
       // On mouse move, if the drag mode is enabled, we change the position of the draggedNode
       mousemovebody: (e) => {

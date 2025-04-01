@@ -101,7 +101,7 @@ class LightRAG:
     # Entity extraction
     # ---
 
-    entity_extract_max_gleaning: int = field(default=1)
+    entity_extract_max_gleaning: int = field(default=int(os.getenv("MAX_EXTRACT_GLEANING", 2)))
     """Maximum number of entity extraction attempts for ambiguous content."""
 
     entity_summary_to_max_tokens: int = field(
@@ -218,7 +218,7 @@ class LightRAG:
     llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 32768)))
     """Maximum number of tokens allowed per LLM response."""
 
-    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 4)))
+    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 24)))
     """Maximum number of concurrent LLM calls."""
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -1874,6 +1874,80 @@ class LightRAG:
                 f"Storage implementation '{storage_name}' requires the following "
                 f"environment variables: {', '.join(missing_vars)}"
             )
+
+    def insert_custom_relations(self, relations_data: list[dict[str, Any]]) -> None:
+        """
+        为已存在的实体之间添加自定义关系
+        
+        Args:
+            relations_data: 关系数据列表，每个关系包含以下字段:
+                - src_id: 源实体名称
+                - tgt_id: 目标实体名称
+                - description: 关系描述
+                - keywords: 关系关键词
+                - weight: 可选，关系权重，默认为1.0
+                - source_id: 可选，来源ID
+        """
+        loop = always_get_an_event_loop()
+        loop.run_until_complete(self.ainsert_custom_relations(relations_data))
+
+    async def ainsert_custom_relations(self, relations_data: list[dict[str, Any]]) -> dict[str, Any]:
+        """
+        为已存在的实体之间添加自定义关系（异步版本）
+        """
+        from .kg_manage import insert_custom_relations
+        return await insert_custom_relations(self, relations_data)
+                
+    def update_entity(self, entity_name: str, entity_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        更新已存在的实体信息
+        
+        Args:
+            entity_name: 实体名称
+            entity_data: 要更新的实体数据，可包含以下字段:
+                - description: 实体描述
+                - entity_type: 实体类型
+                - 其他节点属性
+                
+        Returns:
+            包含更新结果的字典
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.aupdate_entity(entity_name, entity_data))
+
+    async def aupdate_entity(self, entity_name: str, entity_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        更新已存在的实体信息（异步版本）
+        """
+        from .kg_manage import update_entity
+        return await update_entity(self, entity_name, entity_data)
+                
+    def update_relation(self, src_entity: str, tgt_entity: str, relation_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        更新已存在的关系信息
+        
+        Args:
+            src_entity: 源实体名称
+            tgt_entity: 目标实体名称
+            relation_data: 要更新的关系数据，可包含以下字段:
+                - description: 关系描述
+                - keywords: 关系关键词
+                - weight: 关系权重
+                - 其他边属性
+                
+        Returns:
+            包含更新结果的字典
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.aupdate_relation(src_entity, tgt_entity, relation_data))
+    
+    async def aupdate_relation(self, src_entity: str, tgt_entity: str, relation_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        更新已存在的关系信息（异步版本）
+        """
+        from .kg_manage import update_relation
+        return await update_relation(self, src_entity, tgt_entity, relation_data)
+
 
     async def aclear_cache(self, modes: list[str] | None = None) -> None:
         """Clear cache data from the LLM response cache storage.

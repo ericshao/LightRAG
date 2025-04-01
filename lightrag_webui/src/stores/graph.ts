@@ -84,7 +84,7 @@ interface GraphState {
   setSigmaInstance: (instance: any) => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
-  setSelectedEdge: (edgeId: string | null) => void
+  setSelectedEdge: (edgeId: string | null, moveToSelected?: boolean) => void
   setFocusedEdge: (edgeId: string | null) => void
   clearSelection: () => void
   reset: () => void
@@ -146,7 +146,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
-  setSelectedEdge: (edgeId: string | null) => set({ selectedEdge: edgeId }),
+  setSelectedEdge: (edgeId: string | null, moveToSelected?: boolean) => 
+    set({ selectedEdge: edgeId, moveToSelectedNode: moveToSelected }),
   setFocusedEdge: (edgeId: string | null) => set({ focusedEdge: edgeId }),
   clearSelection: () =>
     set({

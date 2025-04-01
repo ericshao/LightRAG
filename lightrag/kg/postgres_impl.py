@@ -152,7 +152,7 @@ class PostgreSQLDB:
                         data = None
                 return data
             except Exception as e:
-                logger.error(f"PostgreSQL database, error:{e}")
+                logger.error(f"PostgreSQL database, sql:{sql} error:{e}")
                 raise
 
     async def execute(
