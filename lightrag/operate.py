@@ -622,6 +622,7 @@ async def extract_entities(
     graph_db_lock = get_graph_db_lock(enable_logging=False)
 
     max_concurrent_updates = int(os.getenv("MAX_CONCURRENT_GRAPH_DB_UPDATES", 20))
+
     # Batch process to merge and upsert nodes and edges
     async def batch_process(items, processor_func):
         results = []
@@ -653,11 +654,18 @@ async def extract_entities(
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-        node_args = [(k, v, knowledge_graph_inst, global_config) for k, v in maybe_nodes.items()]
+        node_args = [
+            (k, v, knowledge_graph_inst, global_config) for k, v in maybe_nodes.items()
+        ]
         all_entities_data = await batch_process(node_args, _merge_nodes_then_upsert)
 
-        edge_args = [(k[0], k[1], v, knowledge_graph_inst, global_config) for k, v in maybe_edges.items()]
-        all_relationships_data = await batch_process(edge_args, _merge_edges_then_upsert)
+        edge_args = [
+            (k[0], k[1], v, knowledge_graph_inst, global_config)
+            for k, v in maybe_edges.items()
+        ]
+        all_relationships_data = await batch_process(
+            edge_args, _merge_edges_then_upsert
+        )
 
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."
@@ -746,8 +754,7 @@ async def kg_query(
     if cached_response is not None:
         return cached_response
 
-    # Extract keywords using extract_keywords_only function which already supports conversation history
-    hl_keywords, ll_keywords = await extract_keywords_only(
+    hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
     )
 
@@ -841,6 +848,38 @@ async def kg_query(
         ),
     )
     return response
+
+
+async def get_keywords_from_query(
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> tuple[list[str], list[str]]:
+    """
+    Retrieves high-level and low-level keywords for RAG operations.
+
+    This function checks if keywords are already provided in query parameters,
+    and if not, extracts them from the query text using LLM.
+
+    Args:
+        query: The user's query text
+        query_param: Query parameters that may contain pre-defined keywords
+        global_config: Global configuration dictionary
+        hashing_kv: Optional key-value storage for caching results
+
+    Returns:
+        A tuple containing (high_level_keywords, low_level_keywords)
+    """
+    # Check if pre-defined keywords are already provided
+    if query_param.hl_keywords or query_param.ll_keywords:
+        return query_param.hl_keywords, query_param.ll_keywords
+
+    # Extract keywords using extract_keywords_only function which already supports conversation history
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        query, query_param, global_config, hashing_kv
+    )
+    return hl_keywords, ll_keywords
 
 
 async def extract_keywords_only(
@@ -983,8 +1022,7 @@ async def mix_kg_vector_query(
     # 2. Execute knowledge graph and vector searches in parallel
     async def get_kg_context():
         try:
-            # Extract keywords using extract_keywords_only function which already supports conversation history
-            hl_keywords, ll_keywords = await extract_keywords_only(
+            hl_keywords, ll_keywords = await get_keywords_from_query(
                 query, query_param, global_config, hashing_kv
             )
 
@@ -1364,7 +1402,9 @@ async def _get_node_data(
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"], t.get("file_path", "unknown_source")])
+        text_units_section_list.append(
+            [i, t["content"], t.get("file_path", "unknown_source")]
+        )
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -2061,15 +2101,12 @@ async def query_with_keywords(
         Query response or async iterator
     """
     # Extract keywords
-    hl_keywords, ll_keywords = await extract_keywords_only(
-        text=query,
-        param=param,
+    hl_keywords, ll_keywords = await get_keywords_from_query(
+        query=query,
+        query_param=param,
         global_config=global_config,
         hashing_kv=hashing_kv,
     )
-
-    param.hl_keywords = hl_keywords
-    param.ll_keywords = ll_keywords
 
     # Create a new string with the prompt and the keywords
     ll_keywords_str = ", ".join(ll_keywords)

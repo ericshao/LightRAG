@@ -142,10 +142,6 @@ export default function DocumentManager() {
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
-
-  // State for document status filter
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
@@ -153,6 +149,10 @@ export default function DocumentManager() {
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+
+  // State for document status filter
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+
 
   // Handle sort column click
   const handleSort = (field: SortField) => {
@@ -165,6 +165,79 @@ export default function DocumentManager() {
       setSortDirection('desc')
     }
   }
+
+  // Sort documents based on current sort field and direction
+  const sortDocuments = (documents: DocStatusResponse[]) => {
+    return [...documents].sort((a, b) => {
+      let valueA, valueB;
+
+      // Special handling for ID field based on showFileName setting
+      if (sortField === 'id' && showFileName) {
+        valueA = getDisplayFileName(a);
+        valueB = getDisplayFileName(b);
+      } else if (sortField === 'id') {
+        valueA = a.id;
+        valueB = b.id;
+      } else {
+        // Date fields
+        valueA = new Date(a[sortField]).getTime();
+        valueB = new Date(b[sortField]).getTime();
+      }
+
+      // Apply sort direction
+      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
+
+      // Compare values
+      if (typeof valueA === 'string' && typeof valueB === 'string') {
+        return sortMultiplier * valueA.localeCompare(valueB);
+      } else {
+        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
+      }
+    });
+  }
+
+  const filteredAndSortedDocs = useMemo(() => {
+    if (!docs) return null;
+
+    let filteredDocs = { ...docs };
+
+    if (statusFilter !== 'all') {
+      filteredDocs = {
+        ...docs,
+        statuses: {
+          pending: [],
+          processing: [],
+          processed: [],
+          failed: [],
+          [statusFilter]: docs.statuses[statusFilter] || []
+        }
+      };
+    }
+
+    if (!sortField || !sortDirection) return filteredDocs;
+
+    const sortedStatuses = Object.entries(filteredDocs.statuses).reduce((acc, [status, documents]) => {
+      const sortedDocuments = sortDocuments(documents);
+      acc[status as DocStatus] = sortedDocuments;
+      return acc;
+    }, {} as DocsStatusesResponse['statuses']);
+
+    return { ...filteredDocs, statuses: sortedStatuses };
+  }, [docs, sortField, sortDirection, statusFilter]);
+
+  // Calculate document counts for each status
+  const documentCounts = useMemo(() => {
+    if (!docs) return { all: 0 } as Record<string, number>;
+
+    const counts: Record<string, number> = { all: 0 };
+
+    Object.entries(docs.statuses).forEach(([status, documents]) => {
+      counts[status as DocStatus] = documents.length;
+      counts.all += documents.length;
+    });
+
+    return counts;
+  }, [docs]);
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -325,56 +398,6 @@ export default function DocumentManager() {
 
     return () => clearInterval(interval)
   }, [health, fetchDocuments, t, currentTab])
-
-
-  const filteredAndSortedDocs = useMemo(() => {
-    if (!docs) return null;
-
-    let filteredDocs = { ...docs };
-
-    if (statusFilter !== 'all') {
-      filteredDocs = {
-        ...docs,
-        statuses: {
-          pending: [],
-          processing: [],
-          processed: [],
-          failed: [],
-          [statusFilter]: docs.statuses[statusFilter] || []
-        }
-      };
-    }
-
-    if (!sortField || !sortDirection) return filteredDocs;
-
-    const sortedStatuses = Object.entries(filteredDocs.statuses).reduce((acc, [status, documents]) => {
-      const sortedDocuments = [...documents].sort((a, b) => {
-        if (sortDirection === 'asc') {
-          return (a[sortField] ?? 0) > (b[sortField] ?? 0) ? 1 : -1;
-        } else {
-          return (a[sortField] ?? 0) < (b[sortField] ?? 0) ? 1 : -1;
-        }
-      });
-      acc[status as DocStatus] = sortedDocuments;
-      return acc;
-    }, {} as DocsStatusesResponse['statuses']);
-
-    return { ...filteredDocs, statuses: sortedStatuses };
-  }, [docs, sortField, sortDirection, statusFilter]);
-
-  // Calculate document counts for each status
-  const documentCounts = useMemo(() => {
-    if (!docs) return { all: 0 } as Record<string, number>;
-
-    const counts: Record<string, number> = { all: 0 };
-
-    Object.entries(docs.statuses).forEach(([status, documents]) => {
-      counts[status as DocStatus] = documents.length;
-      counts.all += documents.length;
-    });
-
-    return counts;
-  }, [docs]);
 
   // Add dependency on sort state to re-render when sort changes
   useEffect(() => {
@@ -547,7 +570,7 @@ export default function DocumentManager() {
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
-                      {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).map(([status, documents]) =>
+                      {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).flatMap(([status, documents]) =>
                         documents.map((doc) => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
