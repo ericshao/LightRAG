@@ -13,7 +13,6 @@ import pandas as pd
 
 
 from lightrag.kg import (
-    STORAGE_ENV_REQUIREMENTS,
     STORAGES,
     verify_storage_implementation,
 )
@@ -101,7 +100,9 @@ class LightRAG:
     # Entity extraction
     # ---
 
-    entity_extract_max_gleaning: int = field(default=int(os.getenv("MAX_EXTRACT_GLEANING", 2)))
+    entity_extract_max_gleaning: int = field(
+        default=int(os.getenv("MAX_EXTRACT_GLEANING", 2))
+    )
     """Maximum number of entity extraction attempts for ambiguous content."""
 
     entity_summary_to_max_tokens: int = field(
@@ -230,6 +231,7 @@ class LightRAG:
     vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional parameters for vector database storage."""
 
+    # TODO：deprecated, remove in the future, use WORKSPACE instead
     namespace_prefix: str = field(default="")
     """Prefix for namespacing stored data across different environments."""
 
@@ -510,36 +512,22 @@ class LightRAG:
         self,
         node_label: str,
         max_depth: int = 3,
-        min_degree: int = 0,
-        inclusive: bool = False,
+        max_nodes: int = 1000,
     ) -> KnowledgeGraph:
         """Get knowledge graph for a given label
 
         Args:
             node_label (str): Label to get knowledge graph for
             max_depth (int): Maximum depth of graph
-            min_degree (int, optional): Minimum degree of nodes to include. Defaults to 0.
-            inclusive (bool, optional): Whether to use inclusive search mode. Defaults to False.
+            max_nodes (int, optional): Maximum number of nodes to return. Defaults to 1000.
 
         Returns:
             KnowledgeGraph: Knowledge graph containing nodes and edges
         """
-        # get params supported by get_knowledge_graph of specified storage
-        import inspect
 
-        storage_params = inspect.signature(
-            self.chunk_entity_relation_graph.get_knowledge_graph
-        ).parameters
-
-        kwargs = {"node_label": node_label, "max_depth": max_depth}
-
-        if "min_degree" in storage_params and min_degree > 0:
-            kwargs["min_degree"] = min_degree
-
-        if "inclusive" in storage_params:
-            kwargs["inclusive"] = inclusive
-
-        return await self.chunk_entity_relation_graph.get_knowledge_graph(**kwargs)
+        return await self.chunk_entity_relation_graph.get_knowledge_graph(
+            node_label, max_depth, max_nodes
+        )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
         import_path = STORAGES[storage_name]
@@ -1449,6 +1437,7 @@ class LightRAG:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.adelete_by_entity(entity_name))
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def adelete_by_entity(self, entity_name: str) -> None:
         try:
             await self.entities_vdb.delete_entity(entity_name)
@@ -1486,6 +1475,7 @@ class LightRAG:
             self.adelete_by_relation(source_entity, target_entity)
         )
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def adelete_by_relation(self, source_entity: str, target_entity: str) -> None:
         """Asynchronously delete a relation between two entities.
 
@@ -1494,6 +1484,7 @@ class LightRAG:
             target_entity: Name of the target entity
         """
         try:
+            # TODO: check if has_edge function works on reverse relation
             # Check if the relation exists
             edge_exists = await self.chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
@@ -1554,6 +1545,7 @@ class LightRAG:
         """
         return await self.doc_status.get_docs_by_status(status)
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def adelete_by_doc_id(self, doc_id: str) -> None:
         """Delete a document and all its related data
 
@@ -1585,6 +1577,8 @@ class LightRAG:
             # Get all related chunk IDs
             chunk_ids = set(related_chunks.keys())
             logger.debug(f"Found {len(chunk_ids)} chunks to delete")
+
+            # TODO: self.entities_vdb.client_storage only works for local storage, need to fix this
 
             # 3. Before deleting, check the related entities and relationships for these chunks
             for chunk_id in chunk_ids:
@@ -1857,98 +1851,6 @@ class LightRAG:
 
         return result
 
-    def check_storage_env_vars(self, storage_name: str) -> None:
-        """Check if all required environment variables for storage implementation exist
-
-        Args:
-            storage_name: Storage implementation name
-
-        Raises:
-            ValueError: If required environment variables are missing
-        """
-        required_vars = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
-        missing_vars = [var for var in required_vars if var not in os.environ]
-
-        if missing_vars:
-            raise ValueError(
-                f"Storage implementation '{storage_name}' requires the following "
-                f"environment variables: {', '.join(missing_vars)}"
-            )
-
-    def insert_custom_relations(self, relations_data: list[dict[str, Any]]) -> None:
-        """
-        为已存在的实体之间添加自定义关系
-        
-        Args:
-            relations_data: 关系数据列表，每个关系包含以下字段:
-                - src_id: 源实体名称
-                - tgt_id: 目标实体名称
-                - description: 关系描述
-                - keywords: 关系关键词
-                - weight: 可选，关系权重，默认为1.0
-                - source_id: 可选，来源ID
-        """
-        loop = always_get_an_event_loop()
-        loop.run_until_complete(self.ainsert_custom_relations(relations_data))
-
-    async def ainsert_custom_relations(self, relations_data: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        为已存在的实体之间添加自定义关系（异步版本）
-        """
-        from .kg_manage import insert_custom_relations
-        return await insert_custom_relations(self, relations_data)
-                
-    def update_entity(self, entity_name: str, entity_data: dict[str, Any]) -> dict[str, Any]:
-        """
-        更新已存在的实体信息
-        
-        Args:
-            entity_name: 实体名称
-            entity_data: 要更新的实体数据，可包含以下字段:
-                - description: 实体描述
-                - entity_type: 实体类型
-                - 其他节点属性
-                
-        Returns:
-            包含更新结果的字典
-        """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aupdate_entity(entity_name, entity_data))
-
-    async def aupdate_entity(self, entity_name: str, entity_data: dict[str, Any]) -> dict[str, Any]:
-        """
-        更新已存在的实体信息（异步版本）
-        """
-        from .kg_manage import update_entity
-        return await update_entity(self, entity_name, entity_data)
-                
-    def update_relation(self, src_entity: str, tgt_entity: str, relation_data: dict[str, Any]) -> dict[str, Any]:
-        """
-        更新已存在的关系信息
-        
-        Args:
-            src_entity: 源实体名称
-            tgt_entity: 目标实体名称
-            relation_data: 要更新的关系数据，可包含以下字段:
-                - description: 关系描述
-                - keywords: 关系关键词
-                - weight: 关系权重
-                - 其他边属性
-                
-        Returns:
-            包含更新结果的字典
-        """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aupdate_relation(src_entity, tgt_entity, relation_data))
-    
-    async def aupdate_relation(self, src_entity: str, tgt_entity: str, relation_data: dict[str, Any]) -> dict[str, Any]:
-        """
-        更新已存在的关系信息（异步版本）
-        """
-        from .kg_manage import update_relation
-        return await update_relation(self, src_entity, tgt_entity, relation_data)
-
-
     async def aclear_cache(self, modes: list[str] | None = None) -> None:
         """Clear cache data from the LLM response cache storage.
 
@@ -1980,12 +1882,18 @@ class LightRAG:
         try:
             # Reset the cache storage for specified mode
             if modes:
-                await self.llm_response_cache.delete(modes)
-                logger.info(f"Cleared cache for modes: {modes}")
+                success = await self.llm_response_cache.drop_cache_by_modes(modes)
+                if success:
+                    logger.info(f"Cleared cache for modes: {modes}")
+                else:
+                    logger.warning(f"Failed to clear cache for modes: {modes}")
             else:
                 # Clear all modes
-                await self.llm_response_cache.delete(valid_modes)
-                logger.info("Cleared all cache")
+                success = await self.llm_response_cache.drop_cache_by_modes(valid_modes)
+                if success:
+                    logger.info("Cleared all cache")
+                else:
+                    logger.warning("Failed to clear all cache")
 
             await self.llm_response_cache.index_done_callback()
 
@@ -1996,6 +1904,7 @@ class LightRAG:
         """Synchronous version of aclear_cache."""
         return always_get_an_event_loop().run_until_complete(self.aclear_cache(modes))
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def aedit_entity(
         self, entity_name: str, updated_data: dict[str, str], allow_rename: bool = True
     ) -> dict[str, Any]:
@@ -2208,6 +2117,7 @@ class LightRAG:
             ]
         )
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def aedit_relation(
         self, source_entity: str, target_entity: str, updated_data: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2522,6 +2432,7 @@ class LightRAG:
             self.acreate_relation(source_entity, target_entity, relation_data)
         )
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def amerge_entities(
         self,
         source_entities: list[str],
