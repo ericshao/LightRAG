@@ -18,6 +18,8 @@ import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
 import PropertiesView from '@/components/graph/PropertiesView'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
+import Legend from '@/components/graph/Legend'
+import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -121,6 +123,7 @@ const GraphViewer = () => {
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
+  const showLegend = useSettingsStore.use.showLegend()
 
   // Initialize sigma settings once on component mount
   // All dynamic settings will be updated in GraphControl using useSetSettings
@@ -200,6 +203,7 @@ const GraphViewer = () => {
           <LayoutsControl />
           <ZoomControl />
           <FullScreenControl />
+          <LegendButton />
           <Settings />
           {/* <ThemeToggle /> */}
         </div>
@@ -207,6 +211,12 @@ const GraphViewer = () => {
         {showPropertyPanel && (
           <div className="absolute top-2 right-2">
             <PropertiesView />
+          </div>
+        )}
+
+        {showLegend && (
+          <div className="absolute bottom-10 right-2">
+            <Legend className="bg-background/60 backdrop-blur-lg" />
           </div>
         )}
 

@@ -41,6 +41,13 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
   }
+  update_status?: Record<string, any>
+  core_version?: string
+  api_version?: string
+  auth_mode?: 'enabled' | 'disabled'
+  pipeline_busy: boolean
+  webui_title?: string
+  webui_description?: string
 }
 
 export type LightragDocumentsScanProgress = {
@@ -104,7 +111,7 @@ export type QueryResponse = {
 }
 
 export type DocActionResponse = {
-  status: 'success' | 'partial_success' | 'failure'
+  status: 'success' | 'partial_success' | 'failure' | 'duplicated'
   message: string
 }
 
@@ -120,6 +127,7 @@ export type DocStatusResponse = {
   chunks_count?: number
   error?: string
   metadata?: Record<string, any>
+  file_path: string
 }
 
 export type DocsStatusesResponse = {
@@ -132,6 +140,24 @@ export type AuthStatusResponse = {
   token_type?: string
   auth_mode?: 'enabled' | 'disabled'
   message?: string
+  core_version?: string
+  api_version?: string
+  webui_title?: string
+  webui_description?: string
+}
+
+export type PipelineStatusResponse = {
+  autoscanned: boolean
+  busy: boolean
+  job_name: string
+  job_start?: string
+  docs: number
+  batchs: number
+  cur_batch: number
+  request_pending: boolean
+  latest_message: string
+  history_messages?: string[]
+  update_status?: Record<string, any>
 }
 
 export type LoginResponse = {
@@ -139,6 +165,10 @@ export type LoginResponse = {
   token_type: string
   auth_mode?: 'enabled' | 'disabled'  // Authentication mode identifier
   message?: string                    // Optional message
+  core_version?: string
+  api_version?: string
+  webui_title?: string
+  webui_description?: string
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -179,8 +209,9 @@ axiosInstance.interceptors.response.use(
         }
         // For other APIs, navigate to login page
         navigationService.navigateToLogin();
-        // Return a never-resolving promise to prevent further execution
-        return new Promise(() => {});
+
+        // return a reject Promise
+        return Promise.reject(new Error('Authentication required'));
       }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
@@ -196,9 +227,9 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  minDegree: number
+  maxNodes: number
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&min_degree=${minDegree}`)
+  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
   return response.data
 }
 
@@ -357,6 +388,14 @@ export const clearDocuments = async (): Promise<DocActionResponse> => {
   return response.data
 }
 
+export const clearCache = async (modes?: string[]): Promise<{
+  status: 'success' | 'fail'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/clear_cache', { modes })
+  return response.data
+}
+
 export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
   try {
     // Add a timeout to the request to prevent hanging
@@ -412,6 +451,11 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       auth_mode: 'enabled'
     };
   }
+}
+
+export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
+  const response = await axiosInstance.get('/documents/pipeline_status')
+  return response.data
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {

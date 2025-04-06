@@ -2,18 +2,22 @@
 Knowledge Graph API router implementation
 """
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from typing import Any, Dict, Optional, List
 import logging
 
 from lightrag import LightRAG  # 修改导入方式
+from lightrag.api.utils_api import get_combined_auth_dependency
 
 logger = logging.getLogger(__name__)
 
 def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
     router = APIRouter(prefix="/kg", tags=["Knowledge Graph"])
+    
+    # 创建认证依赖项
+    combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.post("/insert")
+    @router.post("/insert", dependencies=[Depends(combined_auth)])
     async def insert_custom_kg(
         kg_data: Dict[str, Any] = Body(...),
     ):
@@ -72,7 +76,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             logger.error(f"插入自定义知识图谱数据时出错: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.post("/relations")
+    @router.post("/relations", dependencies=[Depends(combined_auth)])
     async def insert_custom_relations(
         relations_data: List[Dict[str, Any]] = Body(...),
     ):
@@ -119,7 +123,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             logger.error(f"添加自定义关系时出错: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("/entity/{entity_name}")
+    @router.get("/entity/{entity_name}", dependencies=[Depends(combined_auth)])
     async def get_entity_info(
         entity_name: str,
         include_vector_data: bool = False,
@@ -144,7 +148,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             logger.error(f"获取实体信息时出错: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("/{node_label}")
+    @router.get("/{node_label}", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
         node_label: str,
         max_depth: int = 2,
@@ -164,7 +168,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             logger.error(f"获取知识图谱时出错: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.delete("/entity/{entity_name}")
+    @router.delete("/entity/{entity_name}", dependencies=[Depends(combined_auth)])
     async def delete_entity(
         entity_name: str,
     ):
@@ -182,7 +186,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             logger.error(f"删除实体时出错: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
     
-    @router.put("/entity/{entity_name}")
+    @router.put("/entity/{entity_name}", dependencies=[Depends(combined_auth)])
     async def update_entity(
         entity_name: str,
         entity_data: Dict[str, Any] = Body(...),
@@ -220,7 +224,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             logger.error(f"更新实体信息时出错: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
-    @router.put("/relation/{src_entity}/{tgt_entity}")
+    @router.put("/relation/{src_entity}/{tgt_entity}", dependencies=[Depends(combined_auth)])
     async def update_relation(
         src_entity: str,
         tgt_entity: str,
@@ -246,10 +250,10 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
             from urllib.parse import unquote
             decoded_src_entity = unquote(src_entity)
             decoded_tgt_entity = unquote(tgt_entity)
-            
+
             # 处理数据类型，确保数据类型正确
             processed_data = relation_data.copy()
-            
+
             # 处理weight字段，确保是数值类型
             if "weight" in processed_data:
                 try:
@@ -259,7 +263,7 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
                         status_code=400, 
                         detail="weight 字段必须是有效的数值"
                     )
-            
+
             # 处理字符串字段，清理可能存在的多余引号
             string_fields = ["description", "keywords", "source_id"]
             for field in string_fields:
@@ -268,20 +272,20 @@ def create_kg_routes(rag: LightRAG, api_key: Optional[str] = None) -> APIRouter:
                     if (processed_data[field].startswith('"') and processed_data[field].endswith('"')) or \
                        (processed_data[field].startswith("'") and processed_data[field].endswith("'")):
                         processed_data[field] = processed_data[field][1:-1]
-            
+
             logger.info(f"Processing update relation request for: {decoded_src_entity} -> {decoded_tgt_entity}")
             logger.info(f"Cleaned data: {processed_data}")
             result = await rag.aupdate_relation(decoded_src_entity, decoded_tgt_entity, processed_data)
-            
+
             if result["status"] == "failed":
                 raise HTTPException(status_code=404, detail=result["message"])
-                
+
             return result
-            
+
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"更新关系信息时出错: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
-            
+
     return router

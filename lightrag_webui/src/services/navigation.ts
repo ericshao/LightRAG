@@ -32,7 +32,7 @@ class NavigationService {
     // Reset backend state
     useBackendState.getState().clear();
 
-    // Reset retrieval history while preserving other user preferences
+    // Reset retrieval history message while preserving other user preferences
     useSettingsStore.getState().setRetrievalHistory([]);
 
     // Clear authentication state
@@ -67,14 +67,10 @@ class NavigationService {
       return;
     }
 
-    // First navigate to login page
-    this.navigate('/login');
+    this.resetAllApplicationState();
+    useAuthStore.getState().logout();
 
-    // Then reset state after navigation
-    setTimeout(() => {
-      this.resetAllApplicationState();
-      useAuthStore.getState().logout();
-    }, 0);
+    this.navigate('/login');
   }
 
   navigateToHome() {

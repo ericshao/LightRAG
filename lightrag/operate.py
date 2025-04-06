@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 import json
 import re
 import os
@@ -25,7 +26,6 @@ from .utils import (
     CacheData,
     statistic_data,
     get_conversation_turns,
-    verbose_debug,
 )
 from .base import (
     BaseGraphStorage,
@@ -38,8 +38,10 @@ from .prompt import GRAPH_FIELD_SEP, PROMPTS
 import time
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(override=True)
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 
 def chunking_by_token_size(
@@ -173,7 +175,7 @@ async def _handle_single_entity_extraction(
         entity_type=entity_type,
         description=entity_description,
         source_id=chunk_key,
-        metadata={"created_at": time.time(), "file_path": file_path},
+        file_path=file_path,
     )
 
 
@@ -202,7 +204,7 @@ async def _handle_single_relationship_extraction(
         description=edge_description,
         keywords=edge_keywords,
         source_id=edge_source_id,
-        metadata={"created_at": time.time(), "file_path": file_path},
+        file_path=file_path,
     )
 
 
@@ -224,12 +226,9 @@ async def _merge_nodes_then_upsert(
         already_source_ids.extend(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
-        if already_node.get("metadata") is not None and "file_path" in already_node["metadata"]:
-            already_file_paths.extend(
-                split_string_by_multi_markers(
-                    already_node["metadata"]["file_path"], [GRAPH_FIELD_SEP]
-                )
-            )
+        already_file_paths.extend(
+            split_string_by_multi_markers(already_node["file_path"], [GRAPH_FIELD_SEP])
+        )
         already_description.append(already_node["description"])
 
     entity_type = sorted(
@@ -246,7 +245,7 @@ async def _merge_nodes_then_upsert(
         set([dp["source_id"] for dp in nodes_data] + already_source_ids)
     )
     file_path = GRAPH_FIELD_SEP.join(
-        set([dp["metadata"]["file_path"] for dp in nodes_data] + already_file_paths)
+        set([dp["file_path"] for dp in nodes_data] + already_file_paths)
     )
 
     logger.debug(f"file_path: {file_path}")
@@ -300,7 +299,7 @@ async def _merge_edges_then_upsert(
             if already_edge.get("metadata") is not None and "file_path" in already_edge["metadata"]:
                 already_file_paths.extend(
                     split_string_by_multi_markers(
-                        already_edge["metadata"]["file_path"], [GRAPH_FIELD_SEP]
+                        already_edge["file_path"], [GRAPH_FIELD_SEP]
                     )
                 )
 
@@ -342,11 +341,7 @@ async def _merge_edges_then_upsert(
     )
     file_path = GRAPH_FIELD_SEP.join(
         set(
-            [
-                dp.get("metadata", {}).get("file_path", "unknown_source")
-                for dp in edges_data
-                if dp.get("metadata", {}).get("file_path")
-            ]
+            [dp["file_path"] for dp in edges_data if dp.get("file_path")]
             + already_file_paths
         )
     )
@@ -447,6 +442,13 @@ async def extract_entities(
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
+    total_entities_count = 0
+    total_relations_count = 0
+
+    # Get lock manager from shared storage
+    from .kg.shared_storage import get_graph_db_lock
+
+    graph_db_lock = get_graph_db_lock(enable_logging=False)
 
     async def _user_llm_func_with_cache(
         input_text: str, history_messages: list[dict[str, str]] = None
@@ -545,7 +547,7 @@ async def extract_entities(
             chunk_key_dp (tuple[str, TextChunkSchema]):
                 ("chunk-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
         """
-        nonlocal processed_chunks
+        nonlocal processed_chunks, total_entities_count, total_relations_count
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
@@ -562,11 +564,11 @@ async def extract_entities(
         history = pack_user_ass_to_openai_messages(hint_prompt, inital_result)
 
         # Process initial extraction
-        # maybe_nodes, maybe_edges = await _process_extraction_result(
-        #     inital_result, chunk_key
-        # )
-        maybe_nodes = defaultdict(list)
-        maybe_edges = defaultdict(list)
+        maybe_nodes, maybe_edges = await _process_extraction_result(
+            inital_result, chunk_key, file_path
+        )
+        # maybe_nodes = defaultdict(list)
+        # maybe_edges = defaultdict(list)
 
         # Process additional gleaning results
         for now_glean_index in range(entity_extract_max_gleaning):
@@ -603,136 +605,80 @@ async def extract_entities(
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
-        log_message = f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (deduplicated)"
+        log_message = f"  Chk {processed_chunks}/{total_chunks}: extracted {entities_count} Ent + {relations_count} Rel (deduplicated)"
         logger.info(log_message)
         if pipeline_status is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
-        return dict(maybe_nodes), dict(maybe_edges)
 
+        # Use graph database lock to ensure atomic merges and updates
+        chunk_entities_data = []
+        chunk_relationships_data = []
+
+        async with graph_db_lock:
+            # Process and update entities
+            for entity_name, entities in maybe_nodes.items():
+                entity_data = await _merge_nodes_then_upsert(
+                    entity_name, entities, knowledge_graph_inst, global_config
+                )
+                chunk_entities_data.append(entity_data)
+
+            # Process and update relationships
+            for edge_key, edges in maybe_edges.items():
+                # Ensure edge direction consistency
+                sorted_edge_key = tuple(sorted(edge_key))
+                edge_data = await _merge_edges_then_upsert(
+                    sorted_edge_key[0],
+                    sorted_edge_key[1],
+                    edges,
+                    knowledge_graph_inst,
+                    global_config,
+                )
+                chunk_relationships_data.append(edge_data)
+
+            # Update vector database (within the same lock to ensure atomicity)
+            if entity_vdb is not None and chunk_entities_data:
+                data_for_vdb = {
+                    compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
+                        "entity_name": dp["entity_name"],
+                        "entity_type": dp["entity_type"],
+                        "content": f"{dp['entity_name']}\n{dp['description']}",
+                        "source_id": dp["source_id"],
+                        "file_path": dp.get("file_path", "unknown_source"),
+                    }
+                    for dp in chunk_entities_data
+                }
+                await entity_vdb.upsert(data_for_vdb)
+
+            if relationships_vdb is not None and chunk_relationships_data:
+                data_for_vdb = {
+                    compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
+                        "src_id": dp["src_id"],
+                        "tgt_id": dp["tgt_id"],
+                        "keywords": dp["keywords"],
+                        "content": f"{dp['src_id']}\t{dp['tgt_id']}\n{dp['keywords']}\n{dp['description']}",
+                        "source_id": dp["source_id"],
+                        "file_path": dp.get("file_path", "unknown_source"),
+                    }
+                    for dp in chunk_relationships_data
+                }
+                await relationships_vdb.upsert(data_for_vdb)
+
+            # Update counters
+            total_entities_count += len(chunk_entities_data)
+            total_relations_count += len(chunk_relationships_data)
+
+    # Handle all chunks in parallel
     tasks = [_process_single_content(c) for c in ordered_chunks]
-    results = await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks)
 
-    maybe_nodes = defaultdict(list)
-    maybe_edges = defaultdict(list)
-    for m_nodes, m_edges in results:
-        for k, v in m_nodes.items():
-            maybe_nodes[k].extend(v)
-        for k, v in m_edges.items():
-            maybe_edges[tuple(sorted(k))].extend(v)
-
-    from .kg.shared_storage import get_graph_db_lock
-
-    graph_db_lock = get_graph_db_lock(enable_logging=False)
-
-    max_concurrent_updates = int(os.getenv("MAX_CONCURRENT_GRAPH_DB_UPDATES", 20))
-    # Batch process to merge and upsert nodes and edges
-    async def batch_process(items, processor_func):
-        results = []
-        # Limit the number of concurrent updates to avoid overwhelming the database
-        semaphore = asyncio.Semaphore(max_concurrent_updates)
-
-        async def process_with_semaphore(item_args):
-            async with semaphore:
-                return await processor_func(*item_args)
-
-        tasks = []
-        for item_args in items:
-            task = asyncio.create_task(process_with_semaphore(item_args))
-            tasks.append(task)
-
-        for task in asyncio.as_completed(tasks):
-            result = await task
-            if result:
-                results.append(result)
-
-        return results
-
-    # Ensure that nodes and edges are merged and upserted atomically
-    async with graph_db_lock:
-        log_message = f"Start updating KG: {len(maybe_nodes)} entities, {len(maybe_edges)} relationships"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-        node_args = [(k, v, knowledge_graph_inst, global_config) for k, v in maybe_nodes.items()]
-        all_entities_data = await batch_process(node_args, _merge_nodes_then_upsert)
-
-        edge_args = [(k[0], k[1], v, knowledge_graph_inst, global_config) for k, v in maybe_edges.items()]
-        all_relationships_data = await batch_process(edge_args, _merge_edges_then_upsert)
-
-    if not (all_entities_data or all_relationships_data):
-        log_message = "Didn't extract any entities and relationships."
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-        return
-
-    if not all_entities_data:
-        log_message = "Didn't extract any entities"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-    if not all_relationships_data:
-        log_message = "Didn't extract any relationships"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-    log_message = f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (deduplicated)"
+    log_message = f"Extracted {total_entities_count} entities + {total_relations_count} relationships (total)"
     logger.info(log_message)
     if pipeline_status is not None:
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
             pipeline_status["history_messages"].append(log_message)
-    verbose_debug(
-        f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
-    )
-    verbose_debug(f"New relationships:{all_relationships_data}")
-
-    if entity_vdb is not None:
-        data_for_vdb = {
-            compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                "entity_name": dp["entity_name"],
-                "entity_type": dp["entity_type"],
-                "content": f"{dp['entity_name']}\n{dp['description']}",
-                "source_id": dp["source_id"],
-                "file_path": dp.get("file_path", "unknown_source"),
-                "metadata": {
-                    "created_at": dp.get("created_at", time.time()),
-                    "file_path": dp.get("file_path", "unknown_source"),
-                },
-            }
-            for dp in all_entities_data
-        }
-        await entity_vdb.upsert(data_for_vdb)
-
-    if relationships_vdb is not None:
-        data_for_vdb = {
-            compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                "src_id": dp["src_id"],
-                "tgt_id": dp["tgt_id"],
-                "keywords": dp["keywords"],
-                "content": f"{dp['src_id']}\t{dp['tgt_id']}\n{dp['keywords']}\n{dp['description']}",
-                "source_id": dp["source_id"],
-                "file_path": dp.get("file_path", "unknown_source"),
-                "metadata": {
-                    "created_at": dp.get("created_at", time.time()),
-                    "file_path": dp.get("file_path", "unknown_source"),
-                },
-            }
-            for dp in all_relationships_data
-        }
-        await relationships_vdb.upsert(data_for_vdb)
 
 
 async def kg_query(
@@ -747,7 +693,11 @@ async def kg_query(
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -755,8 +705,7 @@ async def kg_query(
     if cached_response is not None:
         return cached_response
 
-    # Extract keywords using extract_keywords_only function which already supports conversation history
-    hl_keywords, ll_keywords = await extract_keywords_only(
+    hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
     )
 
@@ -852,6 +801,38 @@ async def kg_query(
     return response
 
 
+async def get_keywords_from_query(
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> tuple[list[str], list[str]]:
+    """
+    Retrieves high-level and low-level keywords for RAG operations.
+
+    This function checks if keywords are already provided in query parameters,
+    and if not, extracts them from the query text using LLM.
+
+    Args:
+        query: The user's query text
+        query_param: Query parameters that may contain pre-defined keywords
+        global_config: Global configuration dictionary
+        hashing_kv: Optional key-value storage for caching results
+
+    Returns:
+        A tuple containing (high_level_keywords, low_level_keywords)
+    """
+    # Check if pre-defined keywords are already provided
+    if query_param.hl_keywords or query_param.ll_keywords:
+        return query_param.hl_keywords, query_param.ll_keywords
+
+    # Extract keywords using extract_keywords_only function which already supports conversation history
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        query, query_param, global_config, hashing_kv
+    )
+    return hl_keywords, ll_keywords
+
+
 async def extract_keywords_only(
     text: str,
     param: QueryParam,
@@ -908,7 +889,9 @@ async def extract_keywords_only(
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     # 5. Call the LLM for keyword extraction
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        param.model_func if param.model_func else global_config["llm_model_func"]
+    )
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
     # 6. Parse out JSON from the LLM response
@@ -968,7 +951,11 @@ async def mix_kg_vector_query(
     3. Combining both results for comprehensive answer generation
     """
     # 1. Cache handling
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash("mix", query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, "mix", cache_type="query"
@@ -986,8 +973,7 @@ async def mix_kg_vector_query(
     # 2. Execute knowledge graph and vector searches in parallel
     async def get_kg_context():
         try:
-            # Extract keywords using extract_keywords_only function which already supports conversation history
-            hl_keywords, ll_keywords = await extract_keywords_only(
+            hl_keywords, ll_keywords = await get_keywords_from_query(
                 query, query_param, global_config, hashing_kv
             )
 
@@ -1024,6 +1010,7 @@ async def mix_kg_vector_query(
 
         except Exception as e:
             logger.error(f"Error in get_kg_context: {str(e)}")
+            traceback.print_exc()
             return None
 
     async def get_vector_context():
@@ -1035,7 +1022,6 @@ async def mix_kg_vector_query(
         try:
             # Reduce top_k for vector search in hybrid mode since we have structured information from KG
             mix_topk = min(10, query_param.top_k)
-            # TODO: add ids to the query
             results = await chunks_vdb.query(
                 augmented_query, top_k=mix_topk, ids=query_param.ids
             )
@@ -1070,7 +1056,7 @@ async def mix_kg_vector_query(
             # Include time information in content
             formatted_chunks = []
             for c in maybe_trun_chunks:
-                chunk_text = c["content"]
+                chunk_text = "File path: " + c["file_path"] + "\n" + c["content"]
                 if c["created_at"]:
                     chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
@@ -1313,11 +1299,8 @@ async def _get_node_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from node data
+        # Get file path from node data
         file_path = n.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = n.get("metadata", {}).get("file_path", "unknown_source")
 
         entites_section_list.append(
             [
@@ -1351,11 +1334,8 @@ async def _get_node_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from edge data
+        # Get file path from edge data
         file_path = e.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = e.get("metadata", {}).get("file_path", "unknown_source")
 
         relations_section_list.append(
             [
@@ -1372,10 +1352,11 @@ async def _get_node_data(
         )
     relations_context = list_of_list_to_csv(relations_section_list)
 
-    text_units_section_list = [["id", "content", "doc_id"]]
+    text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        doc_id = t.get("full_doc_id", "Unknown")
-        text_units_section_list.append([i, t["content"], doc_id])
+        text_units_section_list.append(
+            [i, t["content"], t.get("file_path", "unknown_source")]
+        )
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1420,9 +1401,16 @@ async def _find_most_related_text_unit_from_entities(
                 all_text_units_lookup[c_id] = index
                 tasks.append((c_id, index, this_edges))
 
-    results = await asyncio.gather(
-        *[text_chunks_db.get_by_id(c_id) for c_id, _, _ in tasks]
-    )
+    # Process in batches of 25 tasks at a time to avoid overwhelming resources
+    batch_size = 5
+    results = []
+
+    for i in range(0, len(tasks), batch_size):
+        batch_tasks = tasks[i : i + batch_size]
+        batch_results = await asyncio.gather(
+            *[text_chunks_db.get_by_id(c_id) for c_id, _, _ in batch_tasks]
+        )
+        results.extend(batch_results)
 
     for (c_id, index, this_edges), data in zip(tasks, results):
         all_text_units_lookup[c_id] = {
@@ -1593,11 +1581,8 @@ async def _get_edge_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from edge data
+        # Get file path from edge data
         file_path = e.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = e.get("metadata", {}).get("file_path", "unknown_source")
 
         relations_section_list.append(
             [
@@ -1623,11 +1608,8 @@ async def _get_edge_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from node data
+        # Get file path from node data
         file_path = n.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = n.get("metadata", {}).get("file_path", "unknown_source")
 
         entites_section_list.append(
             [
@@ -1642,10 +1624,9 @@ async def _get_edge_data(
         )
     entities_context = list_of_list_to_csv(entites_section_list)
 
-    text_units_section_list = [["id", "content", "doc_id"]]
+    text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        doc_id = t.get("full_doc_id", "Unknown")
-        text_units_section_list.append([i, t["content"], doc_id])
+        text_units_section_list.append([i, t["content"], t.get("file_path", "unknown")])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1787,7 +1768,11 @@ async def naive_query(
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -1827,7 +1812,12 @@ async def naive_query(
         f"Truncate chunks from {len(chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
-    section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
+    section = "\n--New Chunk--\n".join(
+        [
+            "File path: " + c["file_path"] + "\n" + c["content"]
+            for c in maybe_trun_chunks
+        ]
+    )
 
     if query_param.only_need_context:
         return section
@@ -1906,7 +1896,11 @@ async def kg_query_with_keywords(
     # ---------------------------
     # 1) Handle potential cache for query results
     # ---------------------------
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = (
+        query_param.model_func
+        if query_param.model_func
+        else global_config["llm_model_func"]
+    )
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -2066,15 +2060,12 @@ async def query_with_keywords(
         Query response or async iterator
     """
     # Extract keywords
-    hl_keywords, ll_keywords = await extract_keywords_only(
-        text=query,
-        param=param,
+    hl_keywords, ll_keywords = await get_keywords_from_query(
+        query=query,
+        query_param=param,
         global_config=global_config,
         hashing_kv=hashing_kv,
     )
-
-    param.hl_keywords = hl_keywords
-    param.ll_keywords = ll_keywords
 
     # Create a new string with the prompt and the keywords
     ll_keywords_str = ", ".join(ll_keywords)

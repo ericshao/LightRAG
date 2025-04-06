@@ -19,9 +19,10 @@ import tiktoken
 from lightrag.prompt import PROMPTS
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(override=True)
-
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
 
@@ -46,7 +47,7 @@ def verbose_debug(msg: str, *args, **kwargs):
             formatted_msg = msg
         # Then truncate the formatted message
         truncated_msg = (
-            formatted_msg[:50] + "..." if len(formatted_msg) > 50 else formatted_msg
+            formatted_msg[:100] + "..." if len(formatted_msg) > 100 else formatted_msg
         )
         logger.debug(truncated_msg, **kwargs)
 
@@ -75,7 +76,12 @@ class LightragPathFilter(logging.Filter):
     def __init__(self):
         super().__init__()
         # Define paths to be filtered
-        self.filtered_paths = ["/documents", "/health", "/webui/"]
+        self.filtered_paths = [
+            "/documents",
+            "/health",
+            "/webui/",
+            "/documents/pipeline_status",
+        ]
         # self.filtered_paths = ["/health", "/webui/"]
 
     def filter(self, record):
@@ -109,33 +115,23 @@ def setup_logger(
     logger_name: str,
     level: str = "INFO",
     add_filter: bool = False,
-    log_file_path: str = None,
+    log_file_path: str | None = None,
+    enable_file_logging: bool = True,
 ):
-    """Set up a logger with console and file handlers
+    """Set up a logger with console and optionally file handlers
 
     Args:
         logger_name: Name of the logger to set up
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         add_filter: Whether to add LightragPathFilter to the logger
-        log_file_path: Path to the log file. If None, will use current directory/lightrag.log
+        log_file_path: Path to the log file. If None and file logging is enabled, defaults to lightrag.log in LOG_DIR or cwd
+        enable_file_logging: Whether to enable logging to a file (defaults to True)
     """
     # Configure formatters
     detailed_formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     simple_formatter = logging.Formatter("%(levelname)s: %(message)s")
-
-    # Get log file path
-    if log_file_path is None:
-        log_dir = os.getenv("LOG_DIR", os.getcwd())
-        log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
-
-    # Ensure log directory exists
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-
-    # Get log file max size and backup count from environment variables
-    log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
-    log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
 
     logger_instance = logging.getLogger(logger_name)
     logger_instance.setLevel(level)
@@ -148,16 +144,34 @@ def setup_logger(
     console_handler.setLevel(level)
     logger_instance.addHandler(console_handler)
 
-    # Add file handler
-    file_handler = logging.handlers.RotatingFileHandler(
-        filename=log_file_path,
-        maxBytes=log_max_bytes,
-        backupCount=log_backup_count,
-        encoding="utf-8",
-    )
-    file_handler.setFormatter(detailed_formatter)
-    file_handler.setLevel(level)
-    logger_instance.addHandler(file_handler)
+    # Add file handler by default unless explicitly disabled
+    if enable_file_logging:
+        # Get log file path
+        if log_file_path is None:
+            log_dir = os.getenv("LOG_DIR", os.getcwd())
+            log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+
+        # Ensure log directory exists
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+
+        # Get log file max size and backup count from environment variables
+        log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
+        log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
+
+        try:
+            # Add file handler
+            file_handler = logging.handlers.RotatingFileHandler(
+                filename=log_file_path,
+                maxBytes=log_max_bytes,
+                backupCount=log_backup_count,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(detailed_formatter)
+            file_handler.setLevel(level)
+            logger_instance.addHandler(file_handler)
+        except PermissionError as e:
+            logger.warning(f"Could not create log file at {log_file_path}: {str(e)}")
+            logger.warning("Continuing with console logging only")
 
     # Add path filter if requested
     if add_filter:
@@ -893,7 +907,7 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
     return import_class
 
 
-def get_content_summary(content: str, max_length: int = 100) -> str:
+def get_content_summary(content: str, max_length: int = 250) -> str:
     """Get summary of document content
 
     Args:
@@ -939,4 +953,61 @@ def check_storage_env_vars(storage_name: str) -> None:
         raise ValueError(
             f"Storage implementation '{storage_name}' requires the following "
             f"environment variables: {', '.join(missing_vars)}"
+        )
+
+
+class TokenTracker:
+    """Track token usage for LLM calls."""
+
+    def __init__(self):
+        self.reset()
+
+    def __enter__(self):
+        self.reset()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        print(self)
+
+    def reset(self):
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.call_count = 0
+
+    def add_usage(self, token_counts):
+        """Add token usage from one LLM call.
+
+        Args:
+            token_counts: A dictionary containing prompt_tokens, completion_tokens, total_tokens
+        """
+        self.prompt_tokens += token_counts.get("prompt_tokens", 0)
+        self.completion_tokens += token_counts.get("completion_tokens", 0)
+
+        # If total_tokens is provided, use it directly; otherwise calculate the sum
+        if "total_tokens" in token_counts:
+            self.total_tokens += token_counts["total_tokens"]
+        else:
+            self.total_tokens += token_counts.get(
+                "prompt_tokens", 0
+            ) + token_counts.get("completion_tokens", 0)
+
+        self.call_count += 1
+
+    def get_usage(self):
+        """Get current usage statistics."""
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "call_count": self.call_count,
+        }
+
+    def __str__(self):
+        usage = self.get_usage()
+        return (
+            f"LLM call count: {usage['call_count']}, "
+            f"Prompt tokens: {usage['prompt_tokens']}, "
+            f"Completion tokens: {usage['completion_tokens']}, "
+            f"Total tokens: {usage['total_tokens']}"
         )
