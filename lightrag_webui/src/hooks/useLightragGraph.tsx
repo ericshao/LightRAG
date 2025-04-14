@@ -1,7 +1,7 @@
-import Graph, { DirectedGraph } from 'graphology'
+import Graph, { UndirectedGraph } from 'graphology'
 import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { randomColor, errorMessage } from '@/lib/utils'
+import { errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph, RawNodeType, RawEdgeType } from '@/stores/graph'
 import { toast } from 'sonner'
@@ -11,32 +11,149 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 
-// Helper function to generate a color based on type
-const getNodeColorByType = (nodeType: string | undefined): string => {
-  const defaultColor = '#CCCCCC'; // Default color for nodes without a type or undefined type
-  if (!nodeType) {
-    return defaultColor;
-  }
+const TYPE_SYNONYMS: Record<string, string> = {
+  'unknown': 'unknown',
+  '未知': 'unknown',
+  'other': 'unknown',
 
+  'category': 'category',
+  '类别': 'category',
+  'type': 'category',
+  '分类': 'category',
+
+  'organization': 'organization',
+  '组织': 'organization',
+  'org': 'organization',
+  'company': 'organization',
+  '公司': 'organization',
+  '机构': 'organization',
+
+  'event': 'event',
+  '事件': 'event',
+  'activity': 'event',
+  '活动': 'event',
+
+  'person': 'person',
+  '人物': 'person',
+  'people': 'person',
+  'human': 'person',
+  '人': 'person',
+
+  'animal': 'animal',
+  '动物': 'animal',
+  'creature': 'animal',
+  '生物': 'animal',
+
+  'geo': 'geo',
+  '地理': 'geo',
+  'geography': 'geo',
+  '地域': 'geo',
+
+  'location': 'location',
+  '地点': 'location',
+  'place': 'location',
+  'address': 'location',
+  '位置': 'location',
+  '地址': 'location',
+
+  'technology': 'technology',
+  '技术': 'technology',
+  'tech': 'technology',
+  '科技': 'technology',
+
+  'equipment': 'equipment',
+  '设备': 'equipment',
+  'device': 'equipment',
+  '装备': 'equipment',
+
+  'weapon': 'weapon',
+  '武器': 'weapon',
+  'arms': 'weapon',
+  '军火': 'weapon',
+
+  'object': 'object',
+  '物品': 'object',
+  'stuff': 'object',
+  '物体': 'object',
+
+  'group': 'group',
+  '群组': 'group',
+  'community': 'group',
+  '社区': 'group'
+};
+
+// 节点类型到颜色的映射
+const NODE_TYPE_COLORS: Record<string, string> = {
+  'unknown': '#f4d371', // Yellow
+  'category': '#e3493b', // GoogleRed
+  'organization': '#0f705d', // Green
+  'event': '#00bfa0', // Turquoise
+  'person': '#4169E1', // RoyalBlue
+  'animal': '#84a3e1', // SkyBlue
+  'geo': '#ff99cc', // Pale Pink
+  'location': '#cf6d17', // Carrot
+  'technology': '#b300b3', // Purple
+  'equipment': '#2F4F4F', // DarkSlateGray
+  'weapon': '#4421af', // DeepPurple
+  'object': '#00cc00', // Green
+  'group': '#0f558a', // NavyBlue
+};
+
+// Extended colors pool - Used for unknown node types
+const EXTENDED_COLORS = [
+  '#5a2c6d', // DeepViolet
+  '#0000ff', // Blue
+  '#cd071e', // ChinaRed
+  '#00CED1', // DarkTurquoise
+  '#9b3a31', // DarkBrown
+  '#b2e061', // YellowGreen
+  '#bd7ebe', // LightViolet
+  '#6ef7b3', // LightGreen
+  '#003366', // DarkBlue
+  '#DEB887', // BurlyWood
+];
+
+// Select color based on node type
+const getNodeColorByType = (nodeType: string | undefined): string => {
+
+  const defaultColor = '#5D6D7E';
+
+  const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown';
   const typeColorMap = useGraphStore.getState().typeColorMap;
 
-  if (!typeColorMap.has(nodeType)) {
-    // Generate a color based on the type string itself for consistency
-    // Seed the global random number generator based on the node type
-    seedrandom(nodeType, { global: true });
-    // Call randomColor without arguments; it will use the globally seeded Math.random()
-    const newColor = randomColor();
-
-    const newMap = new Map(typeColorMap);
-    newMap.set(nodeType, newColor);
-    useGraphStore.setState({ typeColorMap: newMap });
-
-    return newColor;
+  // Return previous color if already mapped
+  if (typeColorMap.has(normalizedType)) {
+    return typeColorMap.get(normalizedType) || defaultColor;
   }
 
-  // Restore the default random seed if necessary, though usually not required for this use case
-  // seedrandom(Date.now().toString(), { global: true });
-  return typeColorMap.get(nodeType) || defaultColor; // Add fallback just in case
+  const standardType = TYPE_SYNONYMS[normalizedType];
+  if (standardType) {
+    const color = NODE_TYPE_COLORS[standardType];
+    // Update color mapping
+    const newMap = new Map(typeColorMap);
+    newMap.set(normalizedType, color);
+    useGraphStore.setState({ typeColorMap: newMap });
+    return color;
+  }
+
+  // For unpredefind nodeTypes, use extended colors
+  // Find used extended colors
+  const usedExtendedColors = new Set(
+    Array.from(typeColorMap.entries())
+      .filter(([, color]) => !Object.values(NODE_TYPE_COLORS).includes(color))
+      .map(([, color]) => color)
+  );
+
+  // Find and use the first unused extended color
+  const unusedColor = EXTENDED_COLORS.find(color => !usedExtendedColors.has(color));
+  const newColor = unusedColor || defaultColor;
+
+  // Update color mapping
+  const newMap = new Map(typeColorMap);
+  newMap.set(normalizedType, newColor);
+  useGraphStore.setState({ typeColorMap: newMap });
+
+  return newColor;
 };
 
 
@@ -220,7 +337,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   }
 
   // Create new graph instance
-  const graph = new DirectedGraph()
+  const graph = new UndirectedGraph()
 
   // Add nodes from raw graph data
   for (const rawNode of rawGraph?.nodes ?? []) {
@@ -246,10 +363,11 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
     // Get weight from edge properties or default to 1
     const weight = rawEdge.properties?.weight !== undefined ? Number(rawEdge.properties.weight) : 1
 
-    rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
+    rawEdge.dynamicId = graph.addEdge(rawEdge.source, rawEdge.target, {
       label: rawEdge.properties?.keywords || undefined,
       size: weight, // Set initial size based on weight
       originalWeight: weight, // Store original weight for recalculation
+      type: 'curvedNoArrow' // Explicitly set edge type to no arrow
     })
   }
 
@@ -403,12 +521,12 @@ const useLightrangeGraph = () => {
         // Check if data is empty or invalid
         if (!data || !data.nodes || data.nodes.length === 0) {
           // Create a graph with a single "Graph Is Empty" node
-          const emptyGraph = new DirectedGraph();
+          const emptyGraph = new UndirectedGraph();
 
           // Add a single node with "Graph Is Empty" label
           emptyGraph.addNode('empty-graph-node', {
             label: t('graphPanel.emptyGraph'),
-            color: '#cccccc', // gray color
+            color: '#5D6D7E', // gray color
             x: 0.5,
             y: 0.5,
             size: 15,
@@ -563,9 +681,22 @@ const useLightrangeGraph = () => {
         // Get degree maxDegree from existing graph for size calculations
         const minDegree = 1;
         let maxDegree = 0;
+
+        // Initialize edge weight min and max values
+        let minWeight = Number.MAX_SAFE_INTEGER;
+        let maxWeight = 0;
+
+        // Calculate node degrees and edge weights from existing graph
         sigmaGraph.forEachNode(node => {
           const degree = sigmaGraph.degree(node);
           maxDegree = Math.max(maxDegree, degree);
+        });
+
+        // Calculate edge weights from existing graph
+        sigmaGraph.forEachEdge(edge => {
+          const weight = sigmaGraph.getEdgeAttribute(edge, 'originalWeight') || 1;
+          minWeight = Math.min(minWeight, weight);
+          maxWeight = Math.max(maxWeight, weight);
         });
 
         // First identify connectable nodes (nodes connected to the expanded node)
@@ -630,7 +761,7 @@ const useLightrangeGraph = () => {
 
         // Helper function to update node sizes
         const updateNodeSizes = (
-          sigmaGraph: DirectedGraph,
+          sigmaGraph: UndirectedGraph,
           nodesWithDiscardedEdges: Set<string>,
           minDegree: number,
           maxDegree: number
@@ -639,6 +770,7 @@ const useLightrangeGraph = () => {
           const range = maxDegree - minDegree || 1; // Avoid division by zero
           const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
+          // Update node sizes
           for (const nodeId of nodesWithDiscardedEdges) {
             if (sigmaGraph.hasNode(nodeId)) {
               let newDegree = sigmaGraph.degree(nodeId);
@@ -657,6 +789,25 @@ const useLightrangeGraph = () => {
               }
             }
           }
+        };
+
+        // Helper function to update edge sizes
+        const updateEdgeSizes = (
+          sigmaGraph: UndirectedGraph,
+          minWeight: number,
+          maxWeight: number
+        ) => {
+          // Update edge sizes
+          const minEdgeSize = useSettingsStore.getState().minEdgeSize;
+          const maxEdgeSize = useSettingsStore.getState().maxEdgeSize;
+          const weightRange = maxWeight - minWeight || 1; // Avoid division by zero
+          const sizeScale = maxEdgeSize - minEdgeSize;
+
+          sigmaGraph.forEachEdge(edge => {
+            const weight = sigmaGraph.getEdgeAttribute(edge, 'originalWeight') || 1;
+            const scaledSize = minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5);
+            sigmaGraph.setEdgeAttribute(edge, 'size', scaledSize);
+          });
         };
 
         // If no new connectable nodes found, show toast and return
@@ -750,13 +901,20 @@ const useLightrangeGraph = () => {
           if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
             continue;
           }
-          if (sigmaGraph.hasEdge(newEdge.target, newEdge.source)) {
-            continue;
-          }
+
+          // Get weight from edge properties or default to 1
+          const weight = newEdge.properties?.weight !== undefined ? Number(newEdge.properties.weight) : 1;
+
+          // Update min and max weight values
+          minWeight = Math.min(minWeight, weight);
+          maxWeight = Math.max(maxWeight, weight);
 
           // Add the edge to the sigma graph
-          newEdge.dynamicId = sigmaGraph.addDirectedEdge(newEdge.source, newEdge.target, {
-            label: newEdge.properties?.keywords || undefined
+          newEdge.dynamicId = sigmaGraph.addEdge(newEdge.source, newEdge.target, {
+            label: newEdge.properties?.keywords || undefined,
+            size: weight, // Set initial size based on weight
+            originalWeight: weight, // Store original weight for recalculation
+            type: 'curvedNoArrow' // Explicitly set edge type to no arrow
           });
 
           // Add the edge to the raw graph
@@ -778,9 +936,11 @@ const useLightrangeGraph = () => {
         // Reset search engine to force rebuild
         useGraphStore.getState().resetSearchEngine();
 
-        // Update sizes for all nodes with discarded edges
+        // Update sizes for all nodes and edges
         updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree);
+        updateEdgeSizes(sigmaGraph, minWeight, maxWeight);
 
+        // Final update for the expanded node
         if (sigmaGraph.hasNode(nodeId)) {
           const finalDegree = sigmaGraph.degree(nodeId);
           const limitedDegree = Math.min(finalDegree, maxDegree + 1);
@@ -808,7 +968,7 @@ const useLightrangeGraph = () => {
   }, [nodeToExpand, sigmaGraph, rawGraph, t]);
 
   // Helper function to get all nodes that will be deleted
-  const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: DirectedGraph) => {
+  const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: UndirectedGraph) => {
     const nodesToDelete = new Set<string>([nodeId]);
 
     // Find all nodes that would become isolated after deletion
@@ -836,25 +996,25 @@ const useLightrangeGraph = () => {
       try {
         const state = useGraphStore.getState();
 
-        // 1. 检查节点是否存在
+        // 1. Check if node exists
         if (!sigmaGraph.hasNode(nodeId)) {
           console.error('Node not found:', nodeId);
           return;
         }
 
-        // 2. 获取要删除的节点
+        // 2. Get nodes to delete
         const nodesToDelete = getNodesThatWillBeDeleted(nodeId, sigmaGraph);
 
-        // 3. 检查是否会删除所有节点
+        // 3. Check if this would delete all nodes
         if (nodesToDelete.size === sigmaGraph.nodes().length) {
           toast.error(t('graphPanel.propertiesView.node.deleteAllNodesError'));
           return;
         }
 
-        // 4. 清除选中状态 - 这会导致PropertiesView立即关闭
+        // 4. Clear selection - this will cause PropertiesView to close immediately
         state.clearSelection();
 
-        // 5. 删除节点和相关边
+        // 5. Delete nodes and related edges
         for (const nodeToDelete of nodesToDelete) {
           // Remove the node from the sigma graph (this will also remove connected edges)
           sigmaGraph.dropNode(nodeToDelete);
@@ -936,7 +1096,7 @@ const useLightrangeGraph = () => {
 
     // If no graph exists yet, create a new one and store it
     console.log('Creating new Sigma graph instance')
-    const graph = new DirectedGraph()
+    const graph = new UndirectedGraph()
     useGraphStore.getState().setSigmaGraph(graph)
     return graph as Graph<NodeType, EdgeType>
   }, [sigmaGraph])

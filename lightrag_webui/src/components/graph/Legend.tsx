@@ -19,7 +19,7 @@ const Legend: React.FC<LegendProps> = ({ className }) => {
   return (
     <Card className={`p-2 max-w-xs ${className}`}>
       <h3 className="text-sm font-medium mb-2">{t('graphPanel.legend')}</h3>
-      <ScrollArea className="max-h-40">
+      <ScrollArea className="max-h-80">
         <div className="flex flex-col gap-1">
           {Array.from(typeColorMap.entries()).map(([type, color]) => (
             <div key={type} className="flex items-center gap-2">
@@ -28,7 +28,7 @@ const Legend: React.FC<LegendProps> = ({ className }) => {
                 style={{ backgroundColor: color }}
               />
               <span className="text-xs truncate" title={type}>
-                {type}
+                {t(`graphPanel.nodeTypes.${type.toLowerCase()}`, type)}
               </span>
             </div>
           ))}
