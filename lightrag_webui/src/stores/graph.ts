@@ -74,6 +74,10 @@ interface GraphState {
 
   moveToSelectedNode: boolean
   isFetching: boolean
+  graphIsEmpty: boolean
+  lastSuccessfulQueryLabel: string
+
+  typeColorMap: Map<string, string>
 
   // Global flags to track data fetching attempts
   graphDataFetchAttempted: boolean
@@ -88,6 +92,8 @@ interface GraphState {
   reset: () => void
 
   setMoveToSelectedNode: (moveToSelectedNode: boolean) => void
+  setGraphIsEmpty: (isEmpty: boolean) => void
+  setLastSuccessfulQueryLabel: (label: string) => void
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
@@ -110,6 +116,10 @@ interface GraphState {
   // Node operation state
   nodeToExpand: string | null
   nodeToPrune: string | null
+
+  // Version counter to trigger data refresh
+  graphDataVersion: number
+  incrementGraphDataVersion: () => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set) => ({
@@ -120,6 +130,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   moveToSelectedNode: false,
   isFetching: false,
+  graphIsEmpty: false,
+  lastSuccessfulQueryLabel: '', // Initialize as empty to ensure fetchAllDatabaseLabels runs on first query
 
   // Initialize global flags
   graphDataFetchAttempted: false,
@@ -130,14 +142,19 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   sigmaInstance: null,
   allDatabaseLabels: ['*'],
 
+  typeColorMap: new Map<string, string>(),
+
   searchEngine: null,
+
+  setGraphIsEmpty: (isEmpty: boolean) => set({ graphIsEmpty: isEmpty }),
+  setLastSuccessfulQueryLabel: (label: string) => set({ lastSuccessfulQueryLabel: label }),
 
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
-  setSelectedEdge: (edgeId: string | null, moveToSelected?: boolean) => 
+  setSelectedEdge: (edgeId: string | null, moveToSelected?: boolean) =>
     set({ selectedEdge: edgeId, moveToSelectedNode: moveToSelected }),
   setFocusedEdge: (edgeId: string | null) => set({ focusedEdge: edgeId }),
   clearSelection: () =>
@@ -156,7 +173,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       rawGraph: null,
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
       searchEngine: null,
-      moveToSelectedNode: false
+      moveToSelectedNode: false,
+      graphIsEmpty: false
     });
   },
 
@@ -189,6 +207,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
 
+  setTypeColorMap: (typeColorMap: Map<string, string>) => set({ typeColorMap }),
+
   setSearchEngine: (engine: MiniSearch | null) => set({ searchEngine: engine }),
   resetSearchEngine: () => set({ searchEngine: null }),
 
@@ -203,6 +223,10 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   // Event trigger methods for node operations
   triggerNodeExpand: (nodeId: string | null) => set({ nodeToExpand: nodeId }),
   triggerNodePrune: (nodeId: string | null) => set({ nodeToPrune: nodeId }),
+
+  // Version counter implementation
+  graphDataVersion: 0,
+  incrementGraphDataVersion: () => set((state) => ({ graphDataVersion: state.graphDataVersion + 1 })),
 
 }))
 

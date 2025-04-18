@@ -11,7 +11,8 @@ import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import encode_string_by_tiktoken
-from lightrag.api.utils_api import ollama_server_infos
+from lightrag.api.utils_api import ollama_server_infos, get_combined_auth_dependency
+from fastapi import Depends
 
 
 # query mode according to query prefix (bypass is not LightRAG quer mode)
@@ -22,6 +23,7 @@ class SearchMode(str, Enum):
     hybrid = "hybrid"
     mix = "mix"
     bypass = "bypass"
+    context = "context"
 
 
 class OllamaMessage(BaseModel):
@@ -99,43 +101,59 @@ def estimate_tokens(text: str) -> int:
     return len(tokens)
 
 
-def parse_query_mode(query: str) -> tuple[str, SearchMode]:
+def parse_query_mode(query: str) -> tuple[str, SearchMode, bool]:
     """Parse query prefix to determine search mode
-    Returns tuple of (cleaned_query, search_mode)
+    Returns tuple of (cleaned_query, search_mode, only_need_context)
     """
     mode_map = {
-        "/local ": SearchMode.local,
-        "/global ": SearchMode.global_,  # global_ is used because 'global' is a Python keyword
-        "/naive ": SearchMode.naive,
-        "/hybrid ": SearchMode.hybrid,
-        "/mix ": SearchMode.mix,
-        "/bypass ": SearchMode.bypass,
+        "/local ": (SearchMode.local, False),
+        "/global ": (
+            SearchMode.global_,
+            False,
+        ),  # global_ is used because 'global' is a Python keyword
+        "/naive ": (SearchMode.naive, False),
+        "/hybrid ": (SearchMode.hybrid, False),
+        "/mix ": (SearchMode.mix, False),
+        "/bypass ": (SearchMode.bypass, False),
+        "/context": (
+            SearchMode.hybrid,
+            True,
+        ),
+        "/localcontext": (SearchMode.local, True),
+        "/globalcontext": (SearchMode.global_, True),
+        "/hybridcontext": (SearchMode.hybrid, True),
+        "/naivecontext": (SearchMode.naive, True),
+        "/mixcontext": (SearchMode.mix, True),
     }
 
-    for prefix, mode in mode_map.items():
+    for prefix, (mode, only_need_context) in mode_map.items():
         if query.startswith(prefix):
             # After removing prefix an leading spaces
             cleaned_query = query[len(prefix) :].lstrip()
-            return cleaned_query, mode
+            return cleaned_query, mode, only_need_context
 
-    return query, SearchMode.hybrid
+    return query, SearchMode.hybrid, False
 
 
 class OllamaAPI:
-    def __init__(self, rag: LightRAG, top_k: int = 60):
+    def __init__(self, rag: LightRAG, top_k: int = 60, api_key: Optional[str] = None):
         self.rag = rag
         self.ollama_server_infos = ollama_server_infos
         self.top_k = top_k
+        self.api_key = api_key
         self.router = APIRouter(tags=["ollama"])
         self.setup_routes()
 
     def setup_routes(self):
-        @self.router.get("/version")
+        # Create combined auth dependency for Ollama API routes
+        combined_auth = get_combined_auth_dependency(self.api_key)
+
+        @self.router.get("/version", dependencies=[Depends(combined_auth)])
         async def get_version():
             """Get Ollama version information"""
             return OllamaVersionResponse(version="0.5.4")
 
-        @self.router.get("/tags")
+        @self.router.get("/tags", dependencies=[Depends(combined_auth)])
         async def get_tags():
             """Return available models acting as an Ollama server"""
             return OllamaTagResponse(
@@ -158,7 +176,7 @@ class OllamaAPI:
                 ]
             )
 
-        @self.router.post("/generate")
+        @self.router.post("/generate", dependencies=[Depends(combined_auth)])
         async def generate(raw_request: Request, request: OllamaGenerateRequest):
             """Handle generate completion requests acting as an Ollama model
             For compatibility purpose, the request is not processed by LightRAG,
@@ -290,7 +308,7 @@ class OllamaAPI:
                             "Cache-Control": "no-cache",
                             "Connection": "keep-alive",
                             "Content-Type": "application/x-ndjson",
-                            "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
+                            "X-Accel-Buffering": "no",  # Ensure proper handling of streaming responses in Nginx proxy
                         },
                     )
                 else:
@@ -324,7 +342,7 @@ class OllamaAPI:
                 trace_exception(e)
                 raise HTTPException(status_code=500, detail=str(e))
 
-        @self.router.post("/chat")
+        @self.router.post("/chat", dependencies=[Depends(combined_auth)])
         async def chat(raw_request: Request, request: OllamaChatRequest):
             """Process chat completion requests acting as an Ollama model
             Routes user queries through LightRAG by selecting query mode based on prefix indicators.
@@ -344,7 +362,7 @@ class OllamaAPI:
                 ]
 
                 # Check for query prefix
-                cleaned_query, mode = parse_query_mode(query)
+                cleaned_query, mode, only_need_context = parse_query_mode(query)
 
                 start_time = time.time_ns()
                 prompt_tokens = estimate_tokens(cleaned_query)
@@ -352,7 +370,7 @@ class OllamaAPI:
                 param_dict = {
                     "mode": mode,
                     "stream": request.stream,
-                    "only_need_context": False,
+                    "only_need_context": only_need_context,
                     "conversation_history": conversation_history,
                     "top_k": self.top_k,
                 }

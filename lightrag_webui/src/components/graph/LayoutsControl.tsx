@@ -218,8 +218,8 @@ const LayoutsControl = () => {
     maxIterations: maxIterations,
     settings: {
       attraction: 0.0003,  // Lower attraction force to reduce oscillation
-      repulsion: 0.05,     // Lower repulsion force to reduce oscillation
-      gravity: 0.01,      // Increase gravity to make nodes converge to center faster
+      repulsion: 0.02,     // Lower repulsion force to reduce oscillation
+      gravity: 0.02,      // Increase gravity to make nodes converge to center faster
       inertia: 0.4,        // Lower inertia to add damping effect
       maxMove: 100         // Limit maximum movement per step to prevent large jumps
     }
@@ -289,7 +289,7 @@ const LayoutsControl = () => {
   )
 
   return (
-    <>
+    <div>
       <div>
         {layouts[layout] && 'worker' in layouts[layout] && (
           <WorkerLayoutControl
@@ -310,7 +310,14 @@ const LayoutsControl = () => {
               <GripIcon />
             </Button>
           </PopoverTrigger>
-          <PopoverContent side="right" align="center" className="p-1">
+          <PopoverContent
+            side="right"
+            align="start"
+            sideOffset={8}
+            collisionPadding={5}
+            sticky="always"
+            className="p-1 min-w-auto"
+          >
             <Command>
               <CommandList>
                 <CommandGroup>
@@ -331,7 +338,7 @@ const LayoutsControl = () => {
           </PopoverContent>
         </Popover>
       </div>
-    </>
+    </div>
   )
 }
 

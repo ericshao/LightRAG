@@ -18,14 +18,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from lightrag.api.utils_api import (
-    get_api_key_dependency,
-    parse_args,
-    get_default_host,
+    get_combined_auth_dependency,
     display_splash_screen,
+    check_env_file,
 )
-from lightrag import LightRAG
-from lightrag.types import GPTKeywordExtractionFormat
+from .config import (
+    global_args,
+    update_uvicorn_mode_config,
+    get_default_host,
+)
+import sys
+from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
+from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -45,19 +50,25 @@ from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_pipeline_status_lock,
     initialize_pipeline_status,
-    get_all_update_flags_status,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from .auth import auth_handler
+from lightrag.api.auth import auth_handler
 
-# Load environment variables
-# Updated to use the .env that is inside the current folder
-# This update allows the user to put a different.env file for each lightrag folder
-load_dotenv(".env", override=True)
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
+
+
+webui_title = os.getenv("WEBUI_TITLE")
+webui_description = os.getenv("WEBUI_DESCRIPTION")
 
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
+
+# Global authentication configuration
+auth_configured = bool(auth_handler.accounts)
 
 
 def create_app(args):
@@ -140,25 +151,33 @@ def create_app(args):
             await rag.finalize_storages()
 
     # Initialize FastAPI
-    app = FastAPI(
-        title="LightRAG API",
-        description="API for querying text using LightRAG with separate storage and input directories"
+    app_kwargs = {
+        "title": "LightRAG Server API",
+        "description": "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
         + "(With authentication)"
         if api_key
         else "",
-        version=__api_version__,
-        openapi_url="/openapi.json",  # Explicitly set OpenAPI schema URL
-        docs_url="/docs",  # Explicitly set docs URL
-        redoc_url="/redoc",  # Explicitly set redoc URL
-        openapi_tags=[{"name": "api"}],
-        lifespan=lifespan,
-    )
+        "version": __api_version__,
+        "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
+        "docs_url": "/docs",  # Explicitly set docs URL
+        "redoc_url": "/redoc",  # Explicitly set redoc URL
+        "lifespan": lifespan,
+    }
+
+    # Configure Swagger UI parameters
+    # Enable persistAuthorization and tryItOutEnabled for better user experience
+    app_kwargs["swagger_ui_parameters"] = {
+        "persistAuthorization": True,
+        "tryItOutEnabled": True,
+    }
+
+    app = FastAPI(**app_kwargs)
 
     def get_cors_origins():
-        """Get allowed origins from environment variable
+        """Get allowed origins from global_args
         Returns a list of allowed origins, defaults to ["*"] if not set
         """
-        origins_str = os.getenv("CORS_ORIGINS", "*")
+        origins_str = global_args.cors_origins
         if origins_str == "*":
             return ["*"]
         return [origin.strip() for origin in origins_str.split(",")]
@@ -172,8 +191,8 @@ def create_app(args):
         allow_headers=["*"],
     )
 
-    # Create the optional API key dependency
-    optional_api_key = get_api_key_dependency(api_key)
+    # Create combined auth dependency for all endpoints
+    combined_auth = get_combined_auth_dependency(api_key)
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
@@ -204,6 +223,7 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
+        kwargs["temperature"] = args.temperature
         return await openai_complete_if_cache(
             args.llm_model,
             prompt,
@@ -226,6 +246,7 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
+        kwargs["temperature"] = args.temperature
         return await azure_openai_complete_if_cache(
             args.llm_model,
             prompt,
@@ -299,13 +320,16 @@ def create_app(args):
                 "cosine_better_than_threshold": args.cosine_threshold
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+            enable_llm_cache=args.enable_llm_cache,
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            namespace_prefix=args.namespace_prefix,
+            # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
+            max_parallel_insert=args.max_parallel_insert,
+            addon_params={"language": args.summary_language},
         )
     else:  # azure_openai
         rag = LightRAG(
@@ -328,13 +352,16 @@ def create_app(args):
                 "cosine_better_than_threshold": args.cosine_threshold
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+            enable_llm_cache=args.enable_llm_cache,
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            namespace_prefix=args.namespace_prefix,
+            # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
+            max_parallel_insert=args.max_parallel_insert,
+            addon_params={"language": args.summary_language},
         )
 
     # Add routes
@@ -342,14 +369,14 @@ def create_app(args):
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
     app.include_router(create_kg_routes(rag, api_key))
-    
+
     # Add Dify External Knowledge API routes if enabled
     if os.getenv("ENABLE_DIFY_ADAPTER", "False").lower() == "true":
         ASCIIColors.info("Enabling Dify External Knowledge API adapter")
         app.include_router(create_dify_routes(rag, api_key))
 
     # Add Ollama API routes
-    ollama_api = OllamaAPI(rag, top_k=args.top_k)
+    ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
     @app.get("/")
@@ -357,13 +384,11 @@ def create_app(args):
         """Redirect root path to /webui"""
         return RedirectResponse(url="/webui")
 
-    @app.get("/auth-status", dependencies=[Depends(optional_api_key)])
+    @app.get("/auth-status")
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
-        username = os.getenv("AUTH_USERNAME")
-        password = os.getenv("AUTH_PASSWORD")
 
-        if not (username and password):
+        if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
                 username="guest", role="guest", metadata={"auth_mode": "disabled"}
@@ -374,16 +399,24 @@ def create_app(args):
                 "token_type": "bearer",
                 "auth_mode": "disabled",
                 "message": "Authentication is disabled. Using guest access.",
+                "core_version": core_version,
+                "api_version": __api_version__,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
             }
 
-        return {"auth_configured": True, "auth_mode": "enabled"}
+        return {
+            "auth_configured": True,
+            "auth_mode": "enabled",
+            "core_version": core_version,
+            "api_version": __api_version__,
+            "webui_title": webui_title,
+            "webui_description": webui_description,
+        }
 
-    @app.post("/login", dependencies=[Depends(optional_api_key)])
+    @app.post("/login")
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-        username = os.getenv("AUTH_USERNAME")
-        password = os.getenv("AUTH_PASSWORD")
-
-        if not (username and password):
+        if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
                 username="guest", role="guest", metadata={"auth_mode": "disabled"}
@@ -393,9 +426,13 @@ def create_app(args):
                 "token_type": "bearer",
                 "auth_mode": "disabled",
                 "message": "Authentication is disabled. Using guest access.",
+                "core_version": core_version,
+                "api_version": __api_version__,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
             }
-
-        if form_data.username != username or form_data.password != password:
+        username = form_data.username
+        if auth_handler.accounts.get(username) != form_data.password:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
             )
@@ -408,36 +445,54 @@ def create_app(args):
             "access_token": user_token,
             "token_type": "bearer",
             "auth_mode": "enabled",
+            "core_version": core_version,
+            "api_version": __api_version__,
+            "webui_title": webui_title,
+            "webui_description": webui_description,
         }
 
-    @app.get("/health", dependencies=[Depends(optional_api_key)])
+    @app.get("/health", dependencies=[Depends(combined_auth)])
     async def get_status():
         """Get current system status"""
-        # Get update flags status for all namespaces
-        update_status = await get_all_update_flags_status()
+        try:
+            pipeline_status = await get_namespace_data("pipeline_status")
 
-        return {
-            "status": "healthy",
-            "working_directory": str(args.working_dir),
-            "input_directory": str(args.input_dir),
-            "configuration": {
-                # LLM configuration binding/host address (if applicable)/model (if applicable)
-                "llm_binding": args.llm_binding,
-                "llm_binding_host": args.llm_binding_host,
-                "llm_model": args.llm_model,
-                # embedding model configuration binding/host address (if applicable)/model (if applicable)
-                "embedding_binding": args.embedding_binding,
-                "embedding_binding_host": args.embedding_binding_host,
-                "embedding_model": args.embedding_model,
-                "max_tokens": args.max_tokens,
-                "kv_storage": args.kv_storage,
-                "doc_status_storage": args.doc_status_storage,
-                "graph_storage": args.graph_storage,
-                "vector_storage": args.vector_storage,
-                "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
-            },
-            "update_status": update_status,
-        }
+            if not auth_configured:
+                auth_mode = "disabled"
+            else:
+                auth_mode = "enabled"
+
+            return {
+                "status": "healthy",
+                "working_directory": str(args.working_dir),
+                "input_directory": str(args.input_dir),
+                "configuration": {
+                    # LLM configuration binding/host address (if applicable)/model (if applicable)
+                    "llm_binding": args.llm_binding,
+                    "llm_binding_host": args.llm_binding_host,
+                    "llm_model": args.llm_model,
+                    # embedding model configuration binding/host address (if applicable)/model (if applicable)
+                    "embedding_binding": args.embedding_binding,
+                    "embedding_binding_host": args.embedding_binding_host,
+                    "embedding_model": args.embedding_model,
+                    "max_tokens": args.max_tokens,
+                    "kv_storage": args.kv_storage,
+                    "doc_status_storage": args.doc_status_storage,
+                    "graph_storage": args.graph_storage,
+                    "vector_storage": args.vector_storage,
+                    "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
+                    "enable_llm_cache": args.enable_llm_cache,
+                },
+                "auth_mode": auth_mode,
+                "pipeline_busy": pipeline_status.get("busy", False),
+                "core_version": core_version,
+                "api_version": __api_version__,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
+            }
+        except Exception as e:
+            logger.error(f"Error getting health status: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     # Custom StaticFiles class to prevent caching of HTML files
     class NoCacheStaticFiles(StaticFiles):
@@ -466,7 +521,7 @@ def create_app(args):
 def get_application(args=None):
     """Factory function for creating the FastAPI application"""
     if args is None:
-        args = parse_args()
+        args = global_args
     return create_app(args)
 
 
@@ -574,6 +629,10 @@ def main():
         print("Running under Gunicorn - worker management handled by Gunicorn")
         return
 
+    # Check .env file
+    if not check_env_file():
+        sys.exit(1)
+
     # Check and install dependencies
     check_and_install_dependencies()
 
@@ -583,30 +642,31 @@ def main():
 
     # Configure logging before parsing args
     configure_logging()
-
-    args = parse_args(is_uvicorn_mode=True)
-    display_splash_screen(args)
+    update_uvicorn_mode_config()
+    display_splash_screen(global_args)
 
     # Create application instance directly instead of using factory function
-    app = create_app(args)
+    app = create_app(global_args)
 
     # Start Uvicorn in single process mode
     uvicorn_config = {
         "app": app,  # Pass application instance directly instead of string path
-        "host": args.host,
-        "port": args.port,
+        "host": global_args.host,
+        "port": global_args.port,
         "log_config": None,  # Disable default config
     }
 
-    if args.ssl:
+    if global_args.ssl:
         uvicorn_config.update(
             {
-                "ssl_certfile": args.ssl_certfile,
-                "ssl_keyfile": args.ssl_keyfile,
+                "ssl_certfile": global_args.ssl_certfile,
+                "ssl_keyfile": global_args.ssl_keyfile,
             }
         )
 
-    print(f"Starting Uvicorn server in single-process mode on {args.host}:{args.port}")
+    print(
+        f"Starting Uvicorn server in single-process mode on {global_args.host}:{global_args.port}"
+    )
     uvicorn.run(**uvicorn_config)
 
 

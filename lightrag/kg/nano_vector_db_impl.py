@@ -20,7 +20,6 @@ from .shared_storage import (
     get_storage_lock,
     get_update_flag,
     set_all_update_flags,
-    is_multiprocess,
 )
 
 
@@ -57,16 +56,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(self.namespace)
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_storage_lock(enable_logging=False)
 
     async def _get_client(self):
         """Check if the storage should be reloaded"""
         # Acquire lock to prevent concurrent read and write
         async with self._storage_lock:
             # Check if data needs to be reloaded
-            if (is_multiprocess and self.storage_updated.value) or (
-                not is_multiprocess and self.storage_updated
-            ):
+            if self.storage_updated.value:
                 logger.info(
                     f"Process {os.getpid()} reloading {self.namespace} due to update by another process"
                 )
@@ -76,15 +73,19 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     storage_file=self._client_file_name,
                 )
                 # Reset update flag
-                if is_multiprocess:
-                    self.storage_updated.value = False
-                else:
-                    self.storage_updated = False
+                self.storage_updated.value = False
 
             return self._client
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
+
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
@@ -152,6 +153,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs
 
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
         Args:
             ids: List of vector IDs to be deleted
         """
@@ -165,6 +171,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
 
     async def delete_entity(self, entity_name: str) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
+
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             logger.debug(
@@ -182,6 +195,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
+
         try:
             client = await self._get_client()
             storage = getattr(client, "_NanoVectorDB__storage")
@@ -206,19 +226,20 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
     async def index_done_callback(self) -> bool:
         """Save data to disk"""
-        # Check if storage was updated by another process
-        if is_multiprocess and self.storage_updated.value:
-            # Storage was updated by another process, reload data instead of saving
-            logger.warning(
-                f"Storage for {self.namespace} was updated by another process, reloading..."
-            )
-            self._client = NanoVectorDB(
-                self.embedding_func.embedding_dim,
-                storage_file=self._client_file_name,
-            )
-            # Reset update flag
-            self.storage_updated.value = False
-            return False  # Return error
+        async with self._storage_lock:
+            # Check if storage was updated by another process
+            if self.storage_updated.value:
+                # Storage was updated by another process, reload data instead of saving
+                logger.warning(
+                    f"Storage for {self.namespace} was updated by another process, reloading..."
+                )
+                self._client = NanoVectorDB(
+                    self.embedding_func.embedding_dim,
+                    storage_file=self._client_file_name,
+                )
+                # Reset update flag
+                self.storage_updated.value = False
+                return False  # Return error
 
         # Acquire lock and perform persistence
         async with self._storage_lock:
@@ -228,10 +249,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace)
                 # Reset own update flag to avoid self-reloading
-                if is_multiprocess:
-                    self.storage_updated.value = False
-                else:
-                    self.storage_updated = False
+                self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
                 logger.error(f"Error saving data for {self.namespace}: {e}")
@@ -288,3 +306,43 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         client = await self._get_client()
         return client.get(ids)
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all vector data from storage and clean up resources
+
+        This method will:
+        1. Remove the vector database storage file if it exists
+        2. Reinitialize the vector database client
+        3. Update flags to notify other processes
+        4. Changes is persisted to disk immediately
+
+        This method is intended for use in scenarios where all data needs to be removed,
+
+        Returns:
+            dict[str, str]: Operation status and message
+            - On success: {"status": "success", "message": "data dropped"}
+            - On failure: {"status": "error", "message": "<error details>"}
+        """
+        try:
+            async with self._storage_lock:
+                # delete _client_file_name
+                if os.path.exists(self._client_file_name):
+                    os.remove(self._client_file_name)
+
+                self._client = NanoVectorDB(
+                    self.embedding_func.embedding_dim,
+                    storage_file=self._client_file_name,
+                )
+
+                # Notify other processes that data has been updated
+                await set_all_update_flags(self.namespace)
+                # Reset own update flag to avoid self-reloading
+                self.storage_updated.value = False
+
+                logger.info(
+                    f"Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})"
+                )
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}
